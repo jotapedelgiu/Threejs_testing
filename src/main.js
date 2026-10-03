@@ -7,8 +7,9 @@ import { Car } from './car.js'
 import { readDriveInput, isDown } from './input.js'
 import { joinArena } from './net.js'
 import { RemoteCar } from './remoteCar.js'
-import { measureFootprint, testCars } from './collision.js'
+import { measureFootprint, testCars, testArenaWalls } from './collision.js'
 import { judgeHit, impactPoints, scoreParams, MIN_IMPULSE, HitCooldown, ScoreUI } from './score.js'
+import { pickLivery } from './liveries.js'
 
 const MODEL_URL = `${import.meta.env.BASE_URL}models/BumpyCar.glb`
 // Valores do painel salvos pelo botão "Salvar configurações"
@@ -67,16 +68,26 @@ sun.castShadow = true
 sun.shadow.mapSize.set(2048, 2048)
 sun.shadow.bias = -0.0005
 sun.shadow.normalBias = 0.02
-// A câmera de sombra cobre só a área em volta do carrinho e anda junto com ele
+// A câmera de sombra cobre só a área que a câmera está mostrando: anda junto
+// com ela e cresce com o zoom (ver updateCamera)
 const sc = sun.shadow.camera
-sc.left = sc.bottom = -10
-sc.right = sc.top = 10
-sc.near = 0.5
-sc.far = 50
+sc.near = 1
+sc.far = 160
 scene.add(sun, sun.target)
 
 const sunParams = { azimuth: 215, elevation: 50 }
-const sunDistance = 20
+const sunDistance = 70
+let shadowHalfSize = 0
+function setShadowArea(halfSize) {
+  // Só atualiza quando muda bastante (recalcular a projeção todo frame é à toa)
+  if (Math.abs(halfSize - shadowHalfSize) < 0.5) return
+  shadowHalfSize = halfSize
+  sc.left = sc.bottom = -halfSize
+  sc.right = sc.top = halfSize
+  sc.updateProjectionMatrix()
+}
+setShadowArea(12)
+
 function updateSun() {
   const phi = THREE.MathUtils.degToRad(90 - sunParams.elevation)
   const theta = THREE.MathUtils.degToRad(sunParams.azimuth)
@@ -84,11 +95,15 @@ function updateSun() {
 }
 updateSun()
 
-// --- Chão --------------------------------------------------------------------
-// Plano grande com o material toon. A grade (textura) dá referência de
-// movimento; a cor vem do painel e multiplica a textura.
-const groundParams = { color: '#d8c9a3', grid: 0.12, tileSize: 2 }
-const GROUND_SIZE = 400
+// --- Arena -------------------------------------------------------------------
+// Piso quadrado de ARENA_SIZE x ARENA_SIZE com uma mureta de borracha em volta.
+// A grade (textura) dá referência de movimento; a cor vem do painel e
+// multiplica a textura.
+const ARENA_SIZE = 100
+const ARENA_HALF = ARENA_SIZE / 2
+const WALL_HEIGHT = 1
+const WALL_THICKNESS = 1
+const groundParams = { color: '#d8c9a3', grid: 0.12, tileSize: 2, wallColor: '#e8463c' }
 
 const gridCanvas = document.createElement('canvas')
 gridCanvas.width = gridCanvas.height = 256
@@ -105,18 +120,35 @@ function updateGrid() {
   ctx.fillStyle = `rgb(${v},${v},${v})`
   ctx.fillRect(0, 0, 256, 6)
   ctx.fillRect(0, 0, 6, 256)
-  gridTexture.repeat.setScalar(GROUND_SIZE / groundParams.tileSize)
+  gridTexture.repeat.setScalar(ARENA_SIZE / groundParams.tileSize)
   gridTexture.updateMatrix()
   gridTexture.needsUpdate = true
 }
 updateGrid()
 
-const ground = toonMesh(new THREE.PlaneGeometry(GROUND_SIZE, GROUND_SIZE), { map: gridTexture, rim: 0 })
+const ground = toonMesh(new THREE.PlaneGeometry(ARENA_SIZE, ARENA_SIZE), { map: gridTexture, rim: 0 })
 ground.rotation.x = -Math.PI / 2
 ground.receiveShadow = true
 scene.add(ground)
 const updateGroundColor = () => ground.material.uniforms.uColor.value.set(groundParams.color)
 updateGroundColor()
+
+// Mureta: quatro blocos por fora do piso, com material compartilhado
+const wallMaterial = createToonMaterial({ color: groundParams.wallColor, glossiness: 6 })
+const wallLength = ARENA_SIZE + WALL_THICKNESS * 2
+for (const [x, z, rotated] of [
+  [0, ARENA_HALF + WALL_THICKNESS / 2, false],
+  [0, -ARENA_HALF - WALL_THICKNESS / 2, false],
+  [ARENA_HALF + WALL_THICKNESS / 2, 0, true],
+  [-ARENA_HALF - WALL_THICKNESS / 2, 0, true],
+]) {
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(wallLength, WALL_HEIGHT, WALL_THICKNESS), wallMaterial)
+  wall.position.set(x, WALL_HEIGHT / 2, z)
+  if (rotated) wall.rotation.y = Math.PI / 2
+  wall.castShadow = wall.receiveShadow = true
+  scene.add(wall)
+}
+const updateWallColor = () => wallMaterial.uniforms.uColor.value.set(groundParams.wallColor)
 
 // --- Carrinho -----------------------------------------------------------------
 let car = null
@@ -170,7 +202,10 @@ loadModel(MODEL_URL).then(
     buildCarPanel()
     buildMaterialsPanel()
     // Só agora todos os controles existem; aplica os valores salvos por cima
-    savedSettings.then((s) => s && gui.load(s))
+    savedSettings.then((s) => {
+      if (s) gui.load(s)
+      applyLivery(pickLivery())
+    })
   },
   (err) => console.error('Erro ao carregar o modelo:', err)
 )
@@ -184,7 +219,32 @@ let carTemplate = null // cópia do modelo, para montar os carrinhos remotos
 let carFootprint = null // cápsula de colisão (igual para todos os carrinhos)
 let net = null
 let netTimer = 0
-const remoteCars = new Map() // peerId -> { car: RemoteCar, bodyMaterial, score }
+const remoteCars = new Map() // peerId -> { car: RemoteCar, bodyMaterials, livery, score }
+
+// --- Pintura (livery) -----------------------------------------------------------
+// Sorteada ao entrar; pinta as duas carrocerias (principal e secundária)
+let myLivery = null
+
+function applyLivery(livery) {
+  myLivery = livery
+  carMaterials[0].material.uniforms.uColor.value.set(livery.primary)
+  carMaterials[1].material.uniforms.uColor.value.set(livery.secondary)
+  materialsFolder.controllers.forEach((c) => c.updateDisplay())
+  liveryButton.name(`Sortear pintura (atual: ${livery.name})`)
+}
+
+function rerollLivery() {
+  // Evita repetir a pintura atual e as dos outros jogadores da sala
+  const taken = [myLivery?.name, ...[...remoteCars.values()].map((r) => r.livery)]
+  applyLivery(pickLivery(taken))
+}
+
+function myBodyColors() {
+  return carMaterials.slice(0, 2).map(({ material }) => '#' + material.uniforms.uColor.value.getHexString())
+}
+
+// Bolinha do placar com as duas cores da pintura
+const swatch = ([a, b]) => `linear-gradient(135deg, ${a} 50%, ${b} 50%)`
 
 // Pontuação: eu somo meus pontos quando acerto alguém; os dos outros chegam
 // no estado de cada um (assim quem entra depois já vê)
@@ -198,11 +258,11 @@ function carPosition(peerId) {
 }
 
 function renderScoreboard() {
-  const players = [{ name: 'Você', color: myBodyColor(), score: myScore, isMe: true }]
+  const players = [{ name: 'Você', color: swatch(myBodyColors()), score: myScore, isMe: true }]
   for (const [peerId, remote] of remoteCars) {
     players.push({
       name: `Jogador ${peerId.slice(0, 4).toUpperCase()}`,
-      color: '#' + remote.bodyMaterial.uniforms.uColor.value.getHexString(),
+      color: swatch(remote.bodyMaterials.map((m) => '#' + m.uniforms.uColor.value.getHexString())),
       score: remote.score,
       isMe: false,
     })
@@ -215,20 +275,20 @@ function setNetStatus(peerCount) {
   netStatus.textContent = `Sala "${ROOM_ID}" · ${players} ${players === 1 ? 'jogador' : 'jogadores'}`
 }
 
-function myBodyColor() {
-  return '#' + carMaterials[0].material.uniforms.uColor.value.getHexString()
-}
-
 function createRemoteCar(peerId) {
-  // Clona o modelo; a carroceria principal ganha material próprio para ter
-  // a cor do outro jogador. Os demais materiais são compartilhados, então os
+  // Clona o modelo; as duas carrocerias ganham materiais próprios para ter a
+  // pintura do outro jogador. Os demais materiais são compartilhados, então os
   // ajustes do painel valem para todos os carrinhos.
-  const bodyMaterial = createToonMaterial({ color: 0xffffff, glossiness: 8, side: THREE.DoubleSide })
+  const bodyMaterials = [0, 1].map(() =>
+    createToonMaterial({ color: 0xffffff, glossiness: 8, side: THREE.DoubleSide })
+  )
   const model = carTemplate.clone(true)
   model.traverse((o) => {
-    if (o.isMesh && o.material === carMaterials[0].material) o.material = bodyMaterial
+    if (!o.isMesh) return
+    const i = [carMaterials[0].material, carMaterials[1].material].indexOf(o.material)
+    if (i !== -1) o.material = bodyMaterials[i]
   })
-  const remote = { car: new RemoteCar(model), bodyMaterial, score: 0 }
+  const remote = { car: new RemoteCar(model), bodyMaterials, livery: null, score: 0 }
   scene.add(remote.car.root)
   remoteCars.set(peerId, remote)
   return remote
@@ -241,7 +301,13 @@ function startMultiplayer() {
     onPeerState(peerId, state) {
       const remote = remoteCars.get(peerId) ?? createRemoteCar(peerId)
       remote.car.setState(state)
-      remote.bodyMaterial.uniforms.uColor.value.set(state.color)
+      state.colors?.forEach((c, i) => remote.bodyMaterials[i].uniforms.uColor.value.set(c))
+      // Mesma pintura que a minha: um dos dois sorteia de novo (o de ID menor
+      // mantém, para os dois não trocarem ao mesmo tempo)
+      if (state.livery !== remote.livery) {
+        remote.livery = state.livery
+        if (state.livery === myLivery?.name && net.selfId > peerId) rerollLivery()
+      }
       remote.score = state.score ?? 0
     },
     onHit(hit, attackerId) {
@@ -260,7 +326,7 @@ function startMultiplayer() {
       const remote = remoteCars.get(peerId)
       if (!remote) return
       scene.remove(remote.car.root)
-      remote.bodyMaterial.dispose()
+      remote.bodyMaterials.forEach((m) => m.dispose())
       remoteCars.delete(peerId)
     },
   })
@@ -298,7 +364,7 @@ function updateMultiplayer(dt) {
   netTimer += dt
   if (netTimer >= NET_SEND_INTERVAL) {
     netTimer %= NET_SEND_INTERVAL
-    net.sendState({ ...car.getNetState(), color: myBodyColor(), score: myScore })
+    net.sendState({ ...car.getNetState(), colors: myBodyColors(), livery: myLivery?.name, score: myScore })
   }
 
   scoreUI.update(dt, camera)
@@ -309,20 +375,98 @@ function updateMultiplayer(dt) {
   }
 }
 
-// --- Câmera de arena ------------------------------------------------------------
-// Fixa, olhando o centro da arena de cima, inclinada (45° por padrão).
-const camParams = { elevation: 45, azimuth: 180, distance: 32, fov: 35 }
-const ARENA_CENTER = new THREE.Vector3(0, 0, 0)
+// --- Câmera de grupo -------------------------------------------------------------
+// Ângulo fixo (inclinação/rotação), mas o centro e a distância seguem todos os
+// carrinhos: mira o meio da caixa que envolve os carros e se afasta o
+// suficiente para todos caberem no quadro (com margem).
+const camParams = {
+  elevation: 45,
+  azimuth: 180,
+  fov: 35,
+  minDistance: 22,   // zoom máximo (todos juntos ou jogando sozinho)
+  maxDistance: 90,   // zoom out máximo
+  margin: 4,         // folga em volta dos carros (m)
+  lookAhead: 0.5,    // s: enquadra onde cada carro vai estar, não só onde está
+  smoothing: 3,      // quanto maior, mais rápido a câmera acompanha
+}
+const cam = {
+  center: new THREE.Vector3(),
+  distance: camParams.minDistance,
+  back: new THREE.Vector3(),  // do alvo para a câmera
+  right: new THREE.Vector3(),
+  up: new THREE.Vector3(),
+  ready: false,
+}
+const camPoints = []
+const tmpRel = new THREE.Vector3()
 
-function updateCamera() {
+function updateCameraAxes() {
   const phi = THREE.MathUtils.degToRad(90 - camParams.elevation)
   const theta = THREE.MathUtils.degToRad(camParams.azimuth)
-  camera.position.setFromSphericalCoords(camParams.distance, phi, theta).add(ARENA_CENTER)
-  camera.lookAt(ARENA_CENTER)
+  cam.back.setFromSphericalCoords(1, phi, theta)
+  // Mesma base que o camera.lookAt monta
+  cam.right.crossVectors(THREE.Object3D.DEFAULT_UP, cam.back).normalize()
+  cam.up.crossVectors(cam.back, cam.right)
   camera.fov = camParams.fov
   camera.updateProjectionMatrix()
 }
-updateCamera()
+updateCameraAxes()
+
+// Pontos que precisam aparecer: cada carro, adiantado pela velocidade
+function collectCameraPoints() {
+  camPoints.length = 0
+  const add = (position, velocity) =>
+    camPoints.push(position.clone().addScaledVector(velocity, camParams.lookAhead).setY(1))
+  if (car) add(car.root.position, car.velocity)
+  for (const { car: remote } of remoteCars.values()) {
+    if (remote.hasState) add(remote.root.position, remote.velocity)
+  }
+  return camPoints
+}
+
+function updateCamera(dt) {
+  const points = collectCameraPoints()
+  if (points.length) {
+    // Centro: meio da caixa dos carros no chão
+    const box = new THREE.Box3().setFromPoints(points)
+    const center = box.getCenter(new THREE.Vector3()).setY(0)
+
+    // Distância para cada ponto caber no quadro: a meia-largura visível a uma
+    // profundidade z é z * tan(fov/2); o ponto fica a (d - rel·back) da câmera
+    const tanY = Math.tan(THREE.MathUtils.degToRad(camParams.fov) / 2)
+    const tanX = tanY * camera.aspect
+    let distance = camParams.minDistance
+    for (const p of points) {
+      tmpRel.subVectors(p, center)
+      const depthOffset = tmpRel.dot(cam.back)
+      const x = Math.abs(tmpRel.dot(cam.right)) + camParams.margin
+      const y = Math.abs(tmpRel.dot(cam.up)) + camParams.margin
+      distance = Math.max(distance, x / tanX + depthOffset, y / tanY + depthOffset)
+    }
+    distance = Math.min(distance, camParams.maxDistance)
+
+    if (!cam.ready) {
+      cam.center.copy(center)
+      cam.distance = distance
+      cam.ready = true
+    } else {
+      const k = 1 - Math.exp(-camParams.smoothing * dt)
+      cam.center.lerp(center, k)
+      // Afasta rápido (ninguém sai do quadro), aproxima devagar (sem "respirar")
+      const zoomRate = distance > cam.distance ? camParams.smoothing * 2 : camParams.smoothing * 0.4
+      cam.distance += (distance - cam.distance) * (1 - Math.exp(-zoomRate * dt))
+    }
+  }
+
+  camera.position.copy(cam.center).addScaledVector(cam.back, cam.distance)
+  camera.lookAt(cam.center)
+
+  // Sombra cobre a área visível em volta do centro
+  sun.target.position.copy(cam.center)
+  updateSun()
+  setShadowArea(Math.max(12, cam.distance * 0.55))
+}
+updateCamera(0)
 
 // --- GUI --------------------------------------------------------------------
 const gui = new GUI({ title: 'Controles' })
@@ -367,16 +511,23 @@ if (!import.meta.env.DEV) saveButton.hide()
 const carFolder = gui.addFolder('Carrinho')
 function buildCarPanel() {
   carFolder.add(car.params, 'maxSpeed', 2, 30, 0.5).name('velocidade máx.')
-  carFolder.add(car.params, 'acceleration', 1, 40, 0.5).name('aceleração')
+  carFolder.add(car.params, 'acceleration', 1, 20, 0.5).name('aceleração')
+  carFolder.add(car.params, 'accelCurve', 0.5, 6, 0.1).name('curva de aceleração')
+  carFolder.add(car.params, 'throttleResponse', 0, 2, 0.05).name('resposta do pedal (s)')
   carFolder.add(car.params, 'turnSpeed', 0.5, 6, 0.1).name('giro')
+  carFolder.add(car.params, 'steerResponse', 0, 1.5, 0.05).name('peso do volante (s)')
+  carFolder.add(car.params, 'steerReturn', 0, 1, 0.05).name('volta do volante (s)')
+  carFolder.add(car.params, 'turnInertia', 0, 0.6, 0.01).name('inércia do giro (s)')
   carFolder.add(car.params, 'lean', 0, 3, 0.1).name('inclinação')
   carFolder.add(car.params, 'bounciness', 0, 1.5, 0.05).name('elasticidade da batida')
+  carFolder.add(car.params, 'wallBounce', 0, 1.2, 0.05).name('elasticidade da parede')
   carFolder.add(car.params, 'knockDrag', 0.5, 10, 0.1).name('freio do empurrão')
   carFolder.add(car.params, 'hop', 0, 3, 0.1).name('quique')
 }
 // Uma cor por grupo de material do carrinho
 const materialsFolder = gui.addFolder('Materiais do carrinho')
 materialsFolder.hide()
+const liveryButton = materialsFolder.add({ reroll: () => rerollLivery() }, 'reroll').name('Sortear pintura')
 function buildMaterialsPanel() {
   for (const { name, material } of carMaterials) {
     materialsFolder.addColor(colorProxy(material.uniforms.uColor), 'value').name(name)
@@ -388,14 +539,19 @@ scoreFolder.add(scoreParams, 'minImpact', 0, 9, 0.1).name('mínimo para pontuar'
 scoreFolder.add(scoreParams, 'strong', 0, 12, 0.1).name('FORTE (×2) a partir de')
 scoreFolder.add(scoreParams, 'smash', 0, 12, 0.1).name('PANCADA (×3) a partir de')
 const camFolder = gui.addFolder('Câmera')
-camFolder.add(camParams, 'elevation', 10, 90, 1).name('inclinação (°)').onChange(updateCamera)
-camFolder.add(camParams, 'azimuth', 0, 360, 1).name('rotação (°)').onChange(updateCamera)
-camFolder.add(camParams, 'distance', 5, 100, 0.5).name('distância').onChange(updateCamera)
-camFolder.add(camParams, 'fov', 10, 90, 1).name('campo de visão').onChange(updateCamera)
+camFolder.add(camParams, 'elevation', 10, 90, 1).name('inclinação (°)').onChange(updateCameraAxes)
+camFolder.add(camParams, 'azimuth', 0, 360, 1).name('rotação (°)').onChange(updateCameraAxes)
+camFolder.add(camParams, 'fov', 10, 90, 1).name('campo de visão').onChange(updateCameraAxes)
+camFolder.add(camParams, 'minDistance', 5, 60, 0.5).name('distância mínima')
+camFolder.add(camParams, 'maxDistance', 20, 150, 1).name('distância máxima')
+camFolder.add(camParams, 'margin', 0, 15, 0.5).name('margem (m)')
+camFolder.add(camParams, 'lookAhead', 0, 2, 0.05).name('antecipação (s)')
+camFolder.add(camParams, 'smoothing', 0.5, 10, 0.1).name('suavidade (inv.)')
 const groundFolder = gui.addFolder('Chão')
 groundFolder.addColor(groundParams, 'color').name('cor').onChange(updateGroundColor)
 groundFolder.add(groundParams, 'grid', 0, 0.6, 0.01).name('grade').onChange(updateGrid)
 groundFolder.add(groundParams, 'tileSize', 0.5, 10, 0.5).name('tamanho do quadrado').onChange(updateGrid)
+groundFolder.addColor(groundParams, 'wallColor').name('cor da mureta').onChange(updateWallColor)
 const bgFolder = gui.addFolder('Fundo')
 bgFolder.addColor(bgParams, 'center').name('cor do centro').onChange(updateBackground)
 bgFolder.addColor(bgParams, 'edge').name('cor da borda').onChange(updateBackground)
@@ -442,13 +598,14 @@ function tick(now) {
   if (car) {
     if (isDown('KeyR')) car.reset()
     car.update(dt, readDriveInput())
+    // Paredes da arena (só ricochete, não pontua)
+    for (const { normal, depth } of testArenaWalls(car.root.position, car.yaw, carFootprint, ARENA_HALF)) {
+      car.hitWall(normal, depth)
+    }
 
     updateMultiplayer(dt)
-
-    // Sol e área de sombra acompanham o carrinho
-    sun.target.position.copy(car.root.position)
-    updateSun()
   }
+  updateCamera(dt)
 
   outline.render()
   requestAnimationFrame(tick)

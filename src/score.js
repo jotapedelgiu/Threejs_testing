@@ -15,8 +15,8 @@ const TIE_MARGIN = 0.75         // m/s; diferença abaixo disso = os dois batera
 // do outro. Referência: a velocidade máxima padrão do carrinho é 9 m/s.
 export const scoreParams = {
   minImpact: 2.5, // abaixo disso é raspão e não pontua
-  strong: 6,      // a partir daqui: +2 FORTE!
-  smash: 8.5,     // a partir daqui: +3 PANCADA! (praticamente velocidade máxima)
+  strong: 5.5,    // a partir daqui: +2 FORTE!
+  smash: 7.5,     // a partir daqui: +3 PANCADA! (precisa de uns 3 s de embalo)
 }
 
 /** Pontos pela força da batida (m/s); 0 = raspão. */

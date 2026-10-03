@@ -3,9 +3,14 @@
   "folders": {
     "Carrinho": {
       "controllers": {
-        "velocidade máx.": 9,
-        "aceleração": 9,
-        "giro": 2.4,
+        "velocidade máx.": 10,
+        "aceleração": 5,
+        "curva de aceleração": 1.5,
+        "resposta do pedal (s)": 0.6,
+        "giro": 2.2,
+        "peso do volante (s)": 0.4,
+        "volta do volante (s)": 0.25,
+        "inércia do giro (s)": 0.15,
         "inclinação": 1,
         "elasticidade da batida": 1.15,
         "freio do empurrão": 3.7,
@@ -15,10 +20,18 @@
     },
     "Materiais do carrinho": {
       "controllers": {
-        "Carroceria (principal)": "#ff0000",
-        "Carroceria (secundária)": "#0011ff",
+        "Carroceria (principal)": "#3a3dce",
+        "Carroceria (secundária)": "#a066e8",
         "Metal e detalhes": "#0000ff",
         "Borracha e assento": "#2a2a30"
+      },
+      "folders": {}
+    },
+    "Pontuação (força em m/s)": {
+      "controllers": {
+        "mínimo para pontuar": 2.5,
+        "FORTE (×2) a partir de": 5.5,
+        "PANCADA (×3) a partir de": 7.5
       },
       "folders": {}
     },
@@ -33,7 +46,7 @@
     },
     "Chão": {
       "controllers": {
-        "cor": "#d8c9a3",
+        "cor": "#004852",
         "grade": 0.12,
         "tamanho do quadrado": 2
       },

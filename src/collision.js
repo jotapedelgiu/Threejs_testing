@@ -100,3 +100,22 @@ export function testCars(posA, yawA, posB, yawB, fp) {
     : new THREE.Vector3(posA.x - posB.x || 1, 0, posA.z - posB.z).normalize()
   return { normal, depth }
 }
+
+/**
+ * Testa o carrinho contra as paredes de uma arena quadrada centrada na
+ * origem (de -half a +half em X e Z).
+ * @returns {{ normal: THREE.Vector3, depth: number }[]} uma entrada por parede
+ *   tocada; a normal aponta para dentro da arena
+ */
+export function testArenaWalls(position, yaw, fp, half) {
+  capsuleSegment(position, yaw, fp, tmpA0, tmpA1)
+  const hits = []
+  // Para cada eixo, a ponta do segmento mais perto de cada parede decide
+  for (const [axis, key] of [['x', 'x'], ['z', 'y']]) {
+    const max = Math.max(tmpA0[key], tmpA1[key]) + fp.radius
+    const min = Math.min(tmpA0[key], tmpA1[key]) - fp.radius
+    if (max > half) hits.push({ normal: new THREE.Vector3(axis === 'x' ? -1 : 0, 0, axis === 'z' ? -1 : 0), depth: max - half })
+    if (min < -half) hits.push({ normal: new THREE.Vector3(axis === 'x' ? 1 : 0, 0, axis === 'z' ? 1 : 0), depth: -half - min })
+  }
+  return hits
+}

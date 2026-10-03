@@ -16,23 +16,36 @@ const HOP_RESTITUTION = 0.35 // quanto do pulo sobra a cada quicada no chão
 const WOBBLE_STIFFNESS = 70  // mola do balanço após a batida
 const WOBBLE_DAMPING = 7
 
+// Move `value` em direção a `target` no máximo `step` (sem passar do alvo)
+const approach = (value, target, step) =>
+  value < target ? Math.min(value + step, target) : Math.max(value - step, target)
+
 export class Car {
   params = {
     maxSpeed: 9,      // m/s para frente
     reverseSpeed: 4,  // m/s de ré
-    acceleration: 9,
+    acceleration: 5,  // m/s² na arrancada (diminui perto da velocidade máxima)
+    accelCurve: 1.5,  // quanto a aceleração cai perto do máximo (menor = cai mais cedo)
+    throttleResponse: 0.6, // s para o pedal chegar a 100% (motor "enchendo")
     brake: 20,        // desaceleração ao inverter o sentido
     drag: 4,          // desaceleração sem acelerar
-    turnSpeed: 2.4,   // rad/s com velocidade máxima
+    turnSpeed: 2.2,   // rad/s com velocidade máxima
+    steerResponse: 0.4,    // s para o volante ir do centro até o fim (peso do volante)
+    steerReturn: 0.25,     // s para o volante voltar ao centro ao soltar
+    turnInertia: 0.15,     // s para a rotação do carro acompanhar o volante
     spinInPlace: 0.6, // fração do giro disponível parado (bate-bate gira no lugar)
     lean: 1,          // intensidade da inclinação visual
     bounciness: 0.9,  // elasticidade da batida (0 = gruda, 1 = quica tudo)
+    wallBounce: 0.6,  // elasticidade da batida na parede da arena
     knockDrag: 2.5,   // quão rápido o empurrão da batida acaba
     hop: 1,           // intensidade do pulinho e do balanço na batida
   }
 
   speed = 0
   yaw = 0
+  pedal = 0   // -1..1, segue o W/S com atraso (throttleResponse)
+  wheel = 0   // -1..1, posição do volante (segue A/D com atraso)
+  yawRate = 0 // rad/s, com inércia
   spawn = new THREE.Vector3() // para onde o R (reset) leva o carrinho
   knock = new THREE.Vector3() // empurrão das batidas (m/s, mundo)
   velocity = new THREE.Vector3() // velocidade total (frente + empurrão)
@@ -55,6 +68,9 @@ export class Car {
   reset() {
     this.speed = 0
     this.yaw = 0
+    this.pedal = 0
+    this.wheel = 0
+    this.yawRate = 0
     this.knock.set(0, 0, 0)
     this.velocity.set(0, 0, 0)
     this.root.position.copy(this.spawn)
@@ -79,23 +95,45 @@ export class Car {
     const p = this.params
     const prevSpeed = this.speed
 
+    // --- Pedal: o motor leva um tempo para chegar à potência total ----------
+    // Soltar o pedal é mais rápido que pisar
+    const pedalRate = throttle === 0 ? 2 : 1
+    this.pedal = approach(this.pedal, throttle, (pedalRate * dt) / Math.max(p.throttleResponse, 1e-3))
+
     // --- Velocidade ---------------------------------------------------------
-    if (throttle !== 0) {
-      // Acelerando contra o movimento atual usa o freio (mais forte)
-      const opposing = Math.sign(this.speed) === -throttle
-      this.speed += throttle * (opposing ? p.brake : p.acceleration) * dt
-    } else {
+    if (this.pedal !== 0) {
+      const opposing = Math.sign(this.speed) === -Math.sign(this.pedal)
+      if (opposing) {
+        // Pedal contra o movimento atual: freia (mais forte)
+        this.speed += this.pedal * p.brake * dt
+      } else {
+        // Curva de aceleração: forte na arrancada, cai perto da velocidade máxima
+        const limit = this.pedal > 0 ? p.maxSpeed : p.reverseSpeed
+        const ratio = Math.min(Math.abs(this.speed) / limit, 1)
+        const taper = 1 - Math.pow(ratio, p.accelCurve)
+        this.speed += this.pedal * p.acceleration * taper * dt
+      }
+    }
+    if (throttle === 0) {
       const drop = Math.min(Math.abs(this.speed), p.drag * dt)
       this.speed -= Math.sign(this.speed) * drop
     }
     this.speed = THREE.MathUtils.clamp(this.speed, -p.reverseSpeed, p.maxSpeed)
 
-    // --- Direção ------------------------------------------------------------
+    // --- Direção: volante pesado + rotação com inércia ----------------------
+    // Virando para o mesmo lado (ou saindo do centro) usa steerResponse;
+    // soltando ou invertendo, o volante volta pelo steerReturn
+    const turningIn = steer !== 0 && Math.sign(steer) !== -Math.sign(this.wheel)
+    const wheelTime = turningIn ? p.steerResponse : p.steerReturn
+    this.wheel = approach(this.wheel, steer, dt / Math.max(wheelTime, 1e-3))
+
     const speedFactor = Math.min(Math.abs(this.speed) / (p.maxSpeed * 0.4), 1)
     const turnAmount = Math.max(speedFactor, p.spinInPlace)
     // De ré o volante inverte, como num carro de verdade
     const dir = this.speed < -0.01 ? -1 : 1
-    this.yaw += steer * p.turnSpeed * turnAmount * dir * dt
+    const targetYawRate = this.wheel * p.turnSpeed * turnAmount * dir
+    this.yawRate += (targetYawRate - this.yawRate) * (1 - Math.exp(-dt / Math.max(p.turnInertia, 1e-3)))
+    this.yaw += this.yawRate * dt
 
     this.root.rotation.y = this.yaw
     this.updateAxes()
@@ -108,7 +146,7 @@ export class Car {
     // --- Inclinação visual --------------------------------------------------
     // Na curva o corpo tomba para fora; acelerando o bico levanta
     const accel = dt > 0 ? (this.speed - prevSpeed) / dt : 0
-    const targetRoll = steer * speedFactor * 0.07 * p.lean
+    const targetRoll = this.wheel * speedFactor * 0.07 * p.lean
     const targetPitch = -THREE.MathUtils.clamp(accel / p.brake, -1, 1) * 0.05 * p.lean
     const k = 1 - Math.exp(-8 * dt)
     this.lean.roll += (targetRoll - this.lean.roll) * k
@@ -164,6 +202,17 @@ export class Car {
     const approaching = this.velocity.clone().sub(otherVelocity).dot(normal)
     if (approaching >= 0) return 0
     return (-(1 + this.params.bounciness) * approaching) / 2
+  }
+
+  /**
+   * Batida na parede (massa infinita): sai de dentro dela e ricocheteia.
+   * @param {THREE.Vector3} normal aponta para dentro da arena
+   */
+  hitWall(normal, depth) {
+    this.separate(normal, depth)
+    const into = this.velocity.dot(normal) // < 0: indo para dentro da parede
+    if (into > -0.3) return // encostando de leve: só desliza
+    this.applyImpulse(normal.clone().multiplyScalar(-(1 + this.params.wallBounce) * into))
   }
 
   /** Soma uma variação de velocidade (m/s, mundo) vinda de uma batida. */
