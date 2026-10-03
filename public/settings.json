@@ -13,7 +13,7 @@
         "inércia do giro (s)": 0.15,
         "inclinação": 1,
         "elasticidade da batida": 1.15,
-        "freio do empurrão": 3.7,
+        "freio do empurrão": 1.6,
         "quique": 1.2
       },
       "folders": {}

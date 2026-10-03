@@ -1,11 +1,25 @@
 import * as THREE from 'three'
 
-// Carrinho de outro jogador. Só desenha o que chega pela rede: a cada pacote
-// guarda o estado alvo e, entre pacotes, continua andando com a velocidade
-// recebida (dead reckoning) e suaviza até ele. Assim o carrinho não
-// "teleporta" mesmo recebendo só ~20 atualizações por segundo.
+// Carro de outro jogador, desenhado por interpolação de estados recebidos.
+//
+// Seguindo Gambetta ("Entity Interpolation") e Fiedler ("State
+// Synchronization"): extrapolar (prever) falha justamente nas batidas, que
+// mudam a direção de repente. Então guardamos os estados recebidos num buffer,
+// cada um com o horário de simulação de quem mandou (`t`), e mostramos o carro
+// INTERP_DELAY segundos no passado, sempre entre dois estados reais. O atraso
+// também serve de buffer de jitter: pacotes que chegam embolados (ou em rajada,
+// quando a aba do outro estava em segundo plano) são tocados no ritmo certo.
 
-const MAX_EXTRAPOLATION = 0.25 // s sem pacote antes de parar de prever
+const INTERP_DELAY = 0.1       // s no passado
+const MAX_EXTRAPOLATION = 0.15 // s além do último estado (só se faltar pacote)
+const BUFFER_SECONDS = 2       // histórico guardado
+
+const lerp = THREE.MathUtils.lerp
+// Interpola ângulo pelo caminho mais curto (evita girar 350° em vez de 10°)
+function lerpAngle(a, b, t) {
+  const d = Math.atan2(Math.sin(b - a), Math.cos(b - a))
+  return a + d * t
+}
 
 export class RemoteCar {
   constructor(model) {
@@ -14,10 +28,11 @@ export class RemoteCar {
     this.root.add(this.body)
     this.body.add(model)
 
-    this.target = { x: 0, z: 0, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0 }
-    // Velocidade usada pela colisão do jogador local
+    this.snapshots = [] // { t, x, z, yaw, vx, vz, y, roll, pitch }, t crescente
+    // Diferença entre o meu relógio e o de quem manda (inclui a latência)
+    this.clockOffset = null
+    // Velocidade no instante mostrado (usada na colisão do jogador local)
     this.velocity = new THREE.Vector3()
-    this.sinceUpdate = 0
     this.hasState = false
   }
 
@@ -25,42 +40,67 @@ export class RemoteCar {
     return this.root.rotation.y
   }
 
-  setState(state) {
-    Object.assign(this.target, state)
-    this.velocity.set(this.target.vx, 0, this.target.vz)
-    this.sinceUpdate = 0
+  /** Posição no mundo (o root do carro). */
+  get position() {
+    return this.root.position
+  }
+
+  /**
+   * @param {object} state estado recebido, com `t` = relógio de simulação de quem mandou (s)
+   * @param {number} localNow meu relógio (s)
+   */
+  setState(state, localNow) {
+    const snaps = this.snapshots
+    if (snaps.length && state.t <= snaps[snaps.length - 1].t) return // atrasado/repetido
+    snaps.push(state)
+    while (snaps.length > 2 && snaps[0].t < state.t - BUFFER_SECONDS) snaps.shift()
+
+    // Estimativa do deslocamento de relógio: o menor atraso visto é o mais
+    // confiável; sobe devagar se a latência aumentar de verdade
+    const sample = localNow - state.t
+    if (this.clockOffset === null || sample < this.clockOffset) this.clockOffset = sample
+    else this.clockOffset += (sample - this.clockOffset) * 0.02
+
     if (!this.hasState) {
-      // Primeiro pacote: aparece direto no lugar, sem deslizar da origem
-      this.root.position.set(state.x, 0, state.z)
-      this.root.rotation.y = state.yaw
       this.hasState = true
+      this.sample(localNow)
     }
   }
 
-  update(dt) {
-    if (!this.hasState) return
-    const t = this.target
+  /** Posiciona o carro no instante (localNow - atraso), no relógio de quem manda. */
+  sample(localNow) {
+    const snaps = this.snapshots
+    if (!snaps.length) return
+    const t = localNow - this.clockOffset - INTERP_DELAY
 
-    // Prevê o movimento entre pacotes
-    this.sinceUpdate += dt
-    if (this.sinceUpdate < MAX_EXTRAPOLATION) {
-      t.x += t.vx * dt
-      t.z += t.vz * dt
+    const newest = snaps[snaps.length - 1]
+    if (t >= newest.t) {
+      // Faltou pacote: anda um pouco com a última velocidade e depois espera
+      this.apply(newest, newest, 0, Math.min(t - newest.t, MAX_EXTRAPOLATION))
+      return
     }
+    let a = snaps[0]
+    let b = snaps[0]
+    let alpha = 0
+    for (let i = snaps.length - 1; i > 0; i--) {
+      if (snaps[i - 1].t <= t) {
+        a = snaps[i - 1]
+        b = snaps[i]
+        alpha = (t - a.t) / (b.t - a.t)
+        break
+      }
+    }
+    this.apply(a, b, THREE.MathUtils.clamp(alpha, 0, 1), 0)
+  }
 
-    const k = 1 - Math.exp(-12 * dt)
-    this.root.position.x += (t.x - this.root.position.x) * k
-    this.root.position.z += (t.z - this.root.position.z) * k
-
-    // Interpola o ângulo pelo caminho mais curto (evita girar 350° ao invés de 10°)
-    let dYaw = t.yaw - this.root.rotation.y
-    dYaw = Math.atan2(Math.sin(dYaw), Math.cos(dYaw))
-    this.root.rotation.y += dYaw * k
-
-    // Quique e balanço são rápidos: suaviza menos para não "comer" o pulo
-    const kFast = 1 - Math.exp(-30 * dt)
-    this.body.position.y += (t.y - this.body.position.y) * kFast
-    this.body.rotation.z += (t.roll - this.body.rotation.z) * kFast
-    this.body.rotation.x += (t.pitch - this.body.rotation.x) * kFast
+  apply(a, b, alpha, extrapolate) {
+    const vx = lerp(a.vx, b.vx, alpha)
+    const vz = lerp(a.vz, b.vz, alpha)
+    this.root.position.set(lerp(a.x, b.x, alpha) + vx * extrapolate, 0, lerp(a.z, b.z, alpha) + vz * extrapolate)
+    this.root.rotation.y = lerpAngle(a.yaw, b.yaw, alpha)
+    this.body.position.y = lerp(a.y, b.y, alpha)
+    this.body.rotation.z = lerp(a.roll, b.roll, alpha)
+    this.body.rotation.x = lerp(a.pitch, b.pitch, alpha)
+    this.velocity.set(vx, 0, vz)
   }
 }

@@ -1,6 +1,5 @@
-import * as THREE from 'three'
-
-// Pontuação: regra das batidas + interface (placar e "+N" flutuando).
+// Pontuação: só as regras (a interface fica em hud.js). Sem dependência de
+// navegador, então dá para testar no Node.
 //
 // Regra: toda batida vale 1 ponto para quem BATEU, multiplicado pela força.
 // Quem resolve a batida é o agressor: só ele sabe a própria velocidade real no
@@ -59,62 +58,10 @@ export class HitCooldown {
   }
 }
 
-const POPUP_DURATION = 1.1 // s
-const POPUP_TEXT = { 1: '+1', 2: '+2 FORTE!', 3: '+3 PANCADA!' }
-
-export class ScoreUI {
-  constructor() {
-    this.board = document.createElement('div')
-    this.board.className = 'scoreboard'
-    document.body.append(this.board)
-    this.popups = []
-    this.tmp = new THREE.Vector3()
-    this.lastHtml = ''
-  }
-
-  /** @param {{ name: string, color: string, score: number, isMe: boolean }[]} players */
-  render(players) {
-    const rows = [...players]
-      .sort((a, b) => b.score - a.score)
-      .map((p) => `
-        <li class="${p.isMe ? 'me' : ''}">
-          <span class="dot" style="background:${p.color}"></span>
-          <span class="name">${p.name}</span>
-          <span class="points">${p.score}</span>
-        </li>`)
-      .join('')
-    const html = `<h2>Placar</h2><ol>${rows}</ol>`
-    // Só mexe no DOM quando algo mudou
-    if (html !== this.lastHtml) {
-      this.board.innerHTML = html
-      this.lastHtml = html
-    }
-  }
-
-  /** "+N" estilo quadrinhos subindo acima de um ponto do mundo. */
-  popup(worldPosition, mult) {
-    const el = document.createElement('div')
-    el.className = `hit-popup mult-${mult}`
-    el.textContent = POPUP_TEXT[mult]
-    document.body.append(el)
-    this.popups.push({ el, position: worldPosition.clone(), age: 0 })
-  }
-
-  update(dt, camera) {
-    const w = window.innerWidth, h = window.innerHeight
-    this.popups = this.popups.filter((p) => {
-      p.age += dt
-      if (p.age > POPUP_DURATION) {
-        p.el.remove()
-        return false
-      }
-      // Sobe um pouco no mundo e acompanha a câmera
-      this.tmp.copy(p.position)
-      this.tmp.y += 3.4 + p.age * 1.5
-      this.tmp.project(camera)
-      p.el.style.left = `${((this.tmp.x + 1) / 2) * w}px`
-      p.el.style.top = `${((1 - this.tmp.y) / 2) * h}px`
-      return true
-    })
-  }
-}
+// Boost: batida com boost vale mais que a PANCADA e arremessa mais longe; se
+// a vítima bater na parede logo depois, quem deu o boost ganha um bônus
+export const BOOST_HIT_POINTS = 5
+export const BOOST_PUSH = 1.5       // multiplica o empurrão na vítima
+export const WALL_BONUS_POINTS = 2
+export const WALL_BONUS_WINDOW = 2.5 // s depois da batida com boost
+export const WALL_BONUS_MIN_SPEED = 2 // m/s batendo na parede

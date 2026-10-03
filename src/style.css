@@ -121,3 +121,67 @@ html, body {
   75% { opacity: 1; }
   100% { opacity: 0; }
 }
+
+.hit-popup.turbo {
+  font-size: 54px;
+  color: #3fd0ff;
+}
+
+.hit-popup.wall {
+  font-size: 40px;
+  color: #ff7a1a;
+}
+
+.hit-popup.pickup {
+  font-size: 22px;
+  color: #9ff6ff;
+}
+
+/* --- Inventário de boost ---------------------------------------------------- */
+.boost-hud {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  color: #fff;
+  pointer-events: none;
+}
+
+.boost-hud .slots {
+  display: flex;
+  gap: 10px;
+}
+
+.boost-hud .slot {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 3px solid #000;
+  background: rgba(10, 12, 18, 0.55);
+  box-shadow: 2px 2px 0 #000;
+  transition: background 0.15s, transform 0.15s;
+}
+
+.boost-hud .slot.full {
+  background: radial-gradient(circle at 35% 35%, #ffffff, #9ff6ff 35%, #2a9fd6);
+}
+
+.boost-hud.active .slots {
+  animation: boost-pulse 0.2s ease-in-out infinite alternate;
+}
+
+.boost-hud .hint {
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  opacity: 0.75;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+@keyframes boost-pulse {
+  from { transform: scale(1); }
+  to { transform: scale(1.12); }
+}

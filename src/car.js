@@ -16,6 +16,10 @@ const HOP_RESTITUTION = 0.35 // quanto do pulo sobra a cada quicada no chão
 const WOBBLE_STIFFNESS = 70  // mola do balanço após a batida
 const WOBBLE_DAMPING = 7
 
+// Temporários reaproveitados (a física roda 60x por segundo: nada de `new` aqui)
+const tmpImpulse = new THREE.Vector3()
+const tmpDir = new THREE.Vector3()
+
 // Move `value` em direção a `target` no máximo `step` (sem passar do alvo)
 const approach = (value, target, step) =>
   value < target ? Math.min(value + step, target) : Math.max(value - step, target)
@@ -37,13 +41,16 @@ export class Car {
     lean: 1,          // intensidade da inclinação visual
     bounciness: 0.9,  // elasticidade da batida (0 = gruda, 1 = quica tudo)
     wallBounce: 0.6,  // elasticidade da batida na parede da arena
-    knockDrag: 2.5,   // quão rápido o empurrão da batida acaba
+    knockDrag: 1.6,   // quão rápido o empurrão da batida acaba (menor = desliza mais)
     hop: 1,           // intensidade do pulinho e do balanço na batida
+    boostSpeed: 1.8,  // velocidade do boost, em múltiplos da velocidade máxima
+    boostDuration: 0.8, // s
   }
 
   speed = 0
   yaw = 0
   pedal = 0   // -1..1, segue o W/S com atraso (throttleResponse)
+  boostTime = 0 // s restantes de boost
   wheel = 0   // -1..1, posição do volante (segue A/D com atraso)
   yawRate = 0 // rad/s, com inércia
   spawn = new THREE.Vector3() // para onde o R (reset) leva o carrinho
@@ -71,6 +78,7 @@ export class Car {
     this.pedal = 0
     this.wheel = 0
     this.yawRate = 0
+    this.boostTime = 0
     this.knock.set(0, 0, 0)
     this.velocity.set(0, 0, 0)
     this.root.position.copy(this.spawn)
@@ -88,7 +96,27 @@ export class Car {
       y: this.body.position.y,
       roll: this.body.rotation.z,
       pitch: this.body.rotation.x,
+      boosting: this.isBoosting,
     }
+  }
+
+  /** Posição no mundo (o root do carro). */
+  get position() {
+    return this.root.position
+  }
+
+  get isBoosting() {
+    return this.boostTime > 0
+  }
+
+  /** Arrancada: na hora vai para a velocidade de boost, na direção da frente. */
+  boost() {
+    this.boostTime = this.params.boostDuration
+    this.speed = Math.max(this.speed, this.params.maxSpeed * this.params.boostSpeed)
+  }
+
+  endBoost() {
+    this.boostTime = 0
   }
 
   update(dt, { throttle, steer }) {
@@ -118,7 +146,15 @@ export class Car {
       const drop = Math.min(Math.abs(this.speed), p.drag * dt)
       this.speed -= Math.sign(this.speed) * drop
     }
-    this.speed = THREE.MathUtils.clamp(this.speed, -p.reverseSpeed, p.maxSpeed)
+    // Teto de velocidade: durante o boost fica no máximo do boost; depois, a
+    // velocidade que sobrar acima do normal vai caindo (sem tranco)
+    this.boostTime = Math.max(0, this.boostTime - dt)
+    if (this.isBoosting) {
+      this.speed = Math.max(this.speed, p.maxSpeed * p.boostSpeed)
+    } else if (this.speed > p.maxSpeed) {
+      this.speed = Math.max(p.maxSpeed, this.speed - p.drag * 2 * dt)
+    }
+    this.speed = Math.max(this.speed, -p.reverseSpeed)
 
     // --- Direção: volante pesado + rotação com inércia ----------------------
     // Virando para o mesmo lado (ou saindo do centro) usa steerResponse;
@@ -156,6 +192,55 @@ export class Car {
     this.body.rotation.z = this.lean.roll + this.wobble.roll
     this.body.rotation.x = this.lean.pitch + this.wobble.pitch
     this.body.position.y = this.hopY
+  }
+
+  // --- Desenho interpolado ------------------------------------------------
+  // A física roda em passos fixos (ver o loop em main.js). Para não tremer em
+  // telas de 120/144 Hz, o carro é desenhado entre o passo anterior e o atual
+  // (Fiedler, "Fix Your Timestep"). beginRender troca a pose pela interpolada
+  // e endRender devolve a pose da simulação.
+
+  /** Chamar antes de cada passo de física. */
+  savePrevious() {
+    this.prev = this.capturePose(this.prev)
+  }
+
+  capturePose(out = {}) {
+    out.x = this.root.position.x
+    out.z = this.root.position.z
+    out.yaw = this.yaw
+    out.y = this.body.position.y
+    out.roll = this.body.rotation.z
+    out.pitch = this.body.rotation.x
+    return out
+  }
+
+  setPose(p) {
+    this.root.position.x = p.x
+    this.root.position.z = p.z
+    this.root.rotation.y = p.yaw
+    this.body.position.y = p.y
+    this.body.rotation.z = p.roll
+    this.body.rotation.x = p.pitch
+  }
+
+  beginRender(alpha) {
+    if (!this.prev) return
+    this.current = this.capturePose(this.current)
+    const a = this.prev, b = this.current, l = THREE.MathUtils.lerp
+    this.renderPose ??= {}
+    const r = this.renderPose
+    r.x = l(a.x, b.x, alpha)
+    r.z = l(a.z, b.z, alpha)
+    r.yaw = a.yaw + (b.yaw - a.yaw) * alpha
+    r.y = l(a.y, b.y, alpha)
+    r.roll = l(a.roll, b.roll, alpha)
+    r.pitch = l(a.pitch, b.pitch, alpha)
+    this.setPose(r)
+  }
+
+  endRender() {
+    if (this.current) this.setPose(this.current)
   }
 
   updateAxes() {
@@ -199,7 +284,7 @@ export class Car {
    * @returns {number} 0 se já estão se afastando
    */
   collisionImpulse(normal, otherVelocity) {
-    const approaching = this.velocity.clone().sub(otherVelocity).dot(normal)
+    const approaching = this.velocity.dot(normal) - otherVelocity.dot(normal)
     if (approaching >= 0) return 0
     return (-(1 + this.params.bounciness) * approaching) / 2
   }
@@ -207,23 +292,31 @@ export class Car {
   /**
    * Batida na parede (massa infinita): sai de dentro dela e ricocheteia.
    * @param {THREE.Vector3} normal aponta para dentro da arena
+   * @returns {number} velocidade com que bateu na parede (0 = só encostou)
    */
   hitWall(normal, depth) {
     this.separate(normal, depth)
     const into = this.velocity.dot(normal) // < 0: indo para dentro da parede
-    if (into > -0.3) return // encostando de leve: só desliza
-    this.applyImpulse(normal.clone().multiplyScalar(-(1 + this.params.wallBounce) * into))
+    if (into > -0.3) return 0 // encostando de leve: só desliza
+    this.endBoost()
+    this.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(-(1 + this.params.wallBounce) * into))
+    return -into
   }
 
   /** Soma uma variação de velocidade (m/s, mundo) vinda de uma batida. */
   applyImpulse(impulse) {
     this.velocity.add(impulse)
-    // Reparte a nova velocidade: o que está na direção da frente vira `speed`,
-    // o resto vira empurrão lateral
-    this.speed = this.velocity.dot(this.forward)
+    // Reparte a nova velocidade: o que está na direção da frente e cabe na
+    // faixa normal de direção (ré máxima até velocidade máxima) vira `speed`;
+    // todo o resto (lateral e o excesso) vira empurrão, que desliza e vai
+    // morrendo sozinho. Sem isso, um empurrão de frente seria cortado para a
+    // velocidade de ré na hora.
+    const p = this.params
+    const top = p.maxSpeed * (this.isBoosting ? p.boostSpeed : 1)
+    this.speed = THREE.MathUtils.clamp(this.velocity.dot(this.forward), -p.reverseSpeed, top)
     this.knock.copy(this.velocity).addScaledVector(this.forward, -this.speed)
     const strength = impulse.length()
-    if (strength > 1e-6) this.bump(impulse.clone().divideScalar(strength), strength)
+    if (strength > 1e-6) this.bump(tmpDir.copy(impulse).divideScalar(strength), strength)
   }
 
   /** Pulinho + balanço proporcionais à força da batida. */

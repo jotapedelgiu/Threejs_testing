@@ -267,7 +267,10 @@ export function toonify(root, materialFor = () => undefined) {
     // Modelos exportados sem normais: calcula normais suaves
     if (!mesh.geometry.getAttribute('normal')) mesh.geometry.computeVertexNormals()
     const src = mesh.material
-    if (!converted.has(src) && materialFor(src)) converted.set(src, materialFor(src))
+    if (!converted.has(src)) {
+      const chosen = materialFor(src)
+      if (chosen) converted.set(src, chosen)
+    }
     if (!converted.has(src)) {
       // Vidro (transmission) ou transparente: o toon não refrata, só deixa translúcido
       const seeThrough = (src.transmission ?? 0) > 0 || (src.transparent && src.opacity < 1)

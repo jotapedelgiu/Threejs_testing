@@ -101,21 +101,42 @@ export function testCars(posA, yawA, posB, yawB, fp) {
   return { normal, depth }
 }
 
+// Normais das quatro paredes (apontam para dentro da arena). Só leitura.
+const WALL_NORMALS = {
+  maxX: new THREE.Vector3(-1, 0, 0),
+  minX: new THREE.Vector3(1, 0, 0),
+  maxZ: new THREE.Vector3(0, 0, -1),
+  minZ: new THREE.Vector3(0, 0, 1),
+}
+// Resultado reaproveitado: no máximo duas paredes ao mesmo tempo (num canto)
+const wallHits = [{ normal: null, depth: 0 }, { normal: null, depth: 0 }]
+const wallResult = []
+
 /**
  * Testa o carrinho contra as paredes de uma arena quadrada centrada na
- * origem (de -half a +half em X e Z).
+ * origem (de -half a +half em X e Z). Roda todo passo, então não aloca: o
+ * array devolvido é reaproveitado e só vale até a próxima chamada.
  * @returns {{ normal: THREE.Vector3, depth: number }[]} uma entrada por parede
  *   tocada; a normal aponta para dentro da arena
  */
 export function testArenaWalls(position, yaw, fp, half) {
   capsuleSegment(position, yaw, fp, tmpA0, tmpA1)
-  const hits = []
-  // Para cada eixo, a ponta do segmento mais perto de cada parede decide
-  for (const [axis, key] of [['x', 'x'], ['z', 'y']]) {
-    const max = Math.max(tmpA0[key], tmpA1[key]) + fp.radius
-    const min = Math.min(tmpA0[key], tmpA1[key]) - fp.radius
-    if (max > half) hits.push({ normal: new THREE.Vector3(axis === 'x' ? -1 : 0, 0, axis === 'z' ? -1 : 0), depth: max - half })
-    if (min < -half) hits.push({ normal: new THREE.Vector3(axis === 'x' ? 1 : 0, 0, axis === 'z' ? 1 : 0), depth: -half - min })
+  wallResult.length = 0
+  const add = (normal, depth) => {
+    const hit = wallHits[wallResult.length]
+    hit.normal = normal
+    hit.depth = depth
+    wallResult.push(hit)
   }
-  return hits
+  // Em cada eixo, a ponta do segmento mais perto de cada parede decide (a
+  // cápsula é estreita, então nunca toca as duas paredes do mesmo eixo)
+  const maxX = Math.max(tmpA0.x, tmpA1.x) + fp.radius
+  const minX = Math.min(tmpA0.x, tmpA1.x) - fp.radius
+  const maxZ = Math.max(tmpA0.y, tmpA1.y) + fp.radius
+  const minZ = Math.min(tmpA0.y, tmpA1.y) - fp.radius
+  if (maxX > half) add(WALL_NORMALS.maxX, maxX - half)
+  else if (minX < -half) add(WALL_NORMALS.minX, -half - minX)
+  if (maxZ > half) add(WALL_NORMALS.maxZ, maxZ - half)
+  else if (minZ < -half) add(WALL_NORMALS.minZ, -half - minZ)
+  return wallResult
 }
