@@ -7,6 +7,8 @@ import { Car } from './car.js'
 import { readDriveInput, isDown } from './input.js'
 import { joinArena } from './net.js'
 import { RemoteCar } from './remoteCar.js'
+import { measureFootprint, testCars } from './collision.js'
+import { judgeHit, impactPoints, scoreParams, MIN_IMPULSE, HitCooldown, ScoreUI } from './score.js'
 
 const MODEL_URL = `${import.meta.env.BASE_URL}models/BumpyCar.glb`
 // Valores do painel salvos pelo botão "Salvar configurações"
@@ -154,6 +156,10 @@ loadModel(MODEL_URL).then(
 
     carTemplate = model.clone(true)
     car = new Car(model)
+    // Cápsula de colisão medida pelo contorno do carro visto de cima (a
+    // borracha da base é a parte mais larga), com o carro na origem
+    car.root.updateMatrixWorld(true)
+    carFootprint = measureFootprint(model)
     // Nasce num ponto aleatório perto do centro, para os jogadores não
     // aparecerem um em cima do outro
     const a = Math.random() * Math.PI * 2
@@ -175,9 +181,34 @@ const ROOM_ID = new URLSearchParams(location.search).get('sala') || 'arena'
 const NET_SEND_INTERVAL = 1 / 20 // 20 pacotes por segundo
 const netStatus = document.getElementById('net-status')
 let carTemplate = null // cópia do modelo, para montar os carrinhos remotos
+let carFootprint = null // cápsula de colisão (igual para todos os carrinhos)
 let net = null
 let netTimer = 0
-const remoteCars = new Map() // peerId -> { car: RemoteCar, bodyMaterial }
+const remoteCars = new Map() // peerId -> { car: RemoteCar, bodyMaterial, score }
+
+// Pontuação: eu somo meus pontos quando acerto alguém; os dos outros chegam
+// no estado de cada um (assim quem entra depois já vê)
+let myScore = 0
+const hitCooldown = new HitCooldown()
+const scoreUI = new ScoreUI()
+let scoreTimer = 0
+
+function carPosition(peerId) {
+  return peerId === net.selfId ? car.root.position : remoteCars.get(peerId)?.car.root.position
+}
+
+function renderScoreboard() {
+  const players = [{ name: 'Você', color: myBodyColor(), score: myScore, isMe: true }]
+  for (const [peerId, remote] of remoteCars) {
+    players.push({
+      name: `Jogador ${peerId.slice(0, 4).toUpperCase()}`,
+      color: '#' + remote.bodyMaterial.uniforms.uColor.value.getHexString(),
+      score: remote.score,
+      isMe: false,
+    })
+  }
+  scoreUI.render(players)
+}
 
 function setNetStatus(peerCount) {
   const players = peerCount + 1
@@ -197,7 +228,7 @@ function createRemoteCar(peerId) {
   model.traverse((o) => {
     if (o.isMesh && o.material === carMaterials[0].material) o.material = bodyMaterial
   })
-  const remote = { car: new RemoteCar(model), bodyMaterial }
+  const remote = { car: new RemoteCar(model), bodyMaterial, score: 0 }
   scene.add(remote.car.root)
   remoteCars.set(peerId, remote)
   return remote
@@ -211,6 +242,19 @@ function startMultiplayer() {
       const remote = remoteCars.get(peerId) ?? createRemoteCar(peerId)
       remote.car.setState(state)
       remote.bodyMaterial.uniforms.uColor.value.set(state.color)
+      remote.score = state.score ?? 0
+    },
+    onHit(hit, attackerId) {
+      // Fui atingido: o empurrão calculado por quem bateu vale para mim. Se eu
+      // também resolvi essa batida do meu lado (os dois se acharam
+      // agressores), já apliquei o meu ricochete e ignoro o dele
+      const now = performance.now() / 1000
+      if (hit.target === net.selfId && !hitCooldown.recent(attackerId, now)) {
+        hitCooldown.ready(attackerId, now)
+        car.applyImpulse(new THREE.Vector3(hit.ix, 0, hit.iz))
+      }
+      const position = carPosition(attackerId)
+      if (hit.points && position) scoreUI.popup(position, hit.points)
     },
     onPeerLeave(peerId) {
       const remote = remoteCars.get(peerId)
@@ -224,12 +268,45 @@ function startMultiplayer() {
 
 function updateMultiplayer(dt) {
   if (!net) return
+  for (const [peerId, { car: remote }] of remoteCars) {
+    remote.update(dt)
+    if (!remote.hasState) continue
+    // Cada jogador resolve a batida só do próprio carrinho; o outro faz o
+    // mesmo do lado dele, então o resultado fica simétrico
+    const hit = testCars(car.root.position, car.yaw, remote.root.position, remote.yaw, carFootprint)
+    if (!hit) continue
+    car.separate(hit.normal, hit.depth)
+
+    // Quem bateu resolve a batida: aplica o próprio ricochete, manda o
+    // empurrão da vítima e soma os pontos. A vítima espera essa mensagem.
+    // Empate (ex.: de frente): cada um aplica só o próprio ricochete.
+    const judged = judgeHit(hit.normal, car.velocity, remote.velocity)
+    if (judged.role === 'victim') continue
+    const impulse = car.collisionImpulse(hit.normal, remote.velocity)
+    if (impulse < MIN_IMPULSE || !hitCooldown.ready(peerId, performance.now() / 1000)) continue
+
+    car.applyImpulse(hit.normal.clone().multiplyScalar(impulse))
+    if (judged.role === 'tie') continue
+    const points = impactPoints(judged.impact)
+    net.sendHit({ target: peerId, ix: -hit.normal.x * impulse, iz: -hit.normal.z * impulse, points })
+    if (points) {
+      myScore += points
+      scoreUI.popup(car.root.position, points)
+    }
+  }
+
   netTimer += dt
   if (netTimer >= NET_SEND_INTERVAL) {
     netTimer %= NET_SEND_INTERVAL
-    net.sendState({ ...car.getNetState(), color: myBodyColor() })
+    net.sendState({ ...car.getNetState(), color: myBodyColor(), score: myScore })
   }
-  for (const { car: remote } of remoteCars.values()) remote.update(dt)
+
+  scoreUI.update(dt, camera)
+  scoreTimer += dt
+  if (scoreTimer >= 0.25) {
+    scoreTimer = 0
+    renderScoreboard()
+  }
 }
 
 // --- Câmera de arena ------------------------------------------------------------
@@ -293,6 +370,9 @@ function buildCarPanel() {
   carFolder.add(car.params, 'acceleration', 1, 40, 0.5).name('aceleração')
   carFolder.add(car.params, 'turnSpeed', 0.5, 6, 0.1).name('giro')
   carFolder.add(car.params, 'lean', 0, 3, 0.1).name('inclinação')
+  carFolder.add(car.params, 'bounciness', 0, 1.5, 0.05).name('elasticidade da batida')
+  carFolder.add(car.params, 'knockDrag', 0.5, 10, 0.1).name('freio do empurrão')
+  carFolder.add(car.params, 'hop', 0, 3, 0.1).name('quique')
 }
 // Uma cor por grupo de material do carrinho
 const materialsFolder = gui.addFolder('Materiais do carrinho')
@@ -303,6 +383,10 @@ function buildMaterialsPanel() {
   }
   materialsFolder.show()
 }
+const scoreFolder = gui.addFolder('Pontuação (força em m/s)')
+scoreFolder.add(scoreParams, 'minImpact', 0, 9, 0.1).name('mínimo para pontuar')
+scoreFolder.add(scoreParams, 'strong', 0, 12, 0.1).name('FORTE (×2) a partir de')
+scoreFolder.add(scoreParams, 'smash', 0, 12, 0.1).name('PANCADA (×3) a partir de')
 const camFolder = gui.addFolder('Câmera')
 camFolder.add(camParams, 'elevation', 10, 90, 1).name('inclinação (°)').onChange(updateCamera)
 camFolder.add(camParams, 'azimuth', 0, 360, 1).name('rotação (°)').onChange(updateCamera)

@@ -6,7 +6,10 @@
         "velocidade máx.": 9,
         "aceleração": 9,
         "giro": 2.4,
-        "inclinação": 1
+        "inclinação": 1,
+        "elasticidade da batida": 1.15,
+        "freio do empurrão": 3.7,
+        "quique": 1.2
       },
       "folders": {}
     },

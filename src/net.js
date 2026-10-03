@@ -15,11 +15,15 @@ const APP_ID = 'jotapedelgiu-threejs-testing-batebate'
  *   onPeerState: (peerId: string, state: object) => void,
  *   onPeerLeave: (peerId: string) => void,
  *   onPeersChange: (count: number) => void,
+ *   onHit: (hit: { target: string, ix: number, iz: number, points: number }, attackerId: string) => void,
  * }} handlers
  */
-export function joinArena(roomId, { onPeerState, onPeerLeave, onPeersChange }) {
+export function joinArena(roomId, { onPeerState, onPeerLeave, onPeersChange, onHit }) {
   const room = joinRoom({ appId: APP_ID }, roomId)
   const stateAction = room.makeAction('state')
+  // Batida anunciada por quem bateu: empurrão (ix, iz) que `target` deve
+  // receber e os pontos ganhos
+  const hitAction = room.makeAction('hit')
   const peers = new Set()
 
   room.onPeerJoin = (peerId) => {
@@ -32,6 +36,7 @@ export function joinArena(roomId, { onPeerState, onPeerLeave, onPeersChange }) {
     onPeersChange(peers.size)
   }
   stateAction.onMessage = (state, { peerId }) => onPeerState(peerId, state)
+  hitAction.onMessage = (hit, { peerId }) => onHit(hit, peerId)
 
   // Sai da sala ao fechar a aba, para os outros removerem o carrinho na hora
   window.addEventListener('beforeunload', () => room.leave())
@@ -40,5 +45,7 @@ export function joinArena(roomId, { onPeerState, onPeerLeave, onPeersChange }) {
     selfId,
     /** Manda o estado do meu carrinho para todos da sala. */
     sendState: (state) => (peers.size ? stateAction.send(state) : undefined),
+    /** Anuncia para todos que eu acertei `target`. */
+    sendHit: (hit) => hitAction.send(hit),
   }
 }
