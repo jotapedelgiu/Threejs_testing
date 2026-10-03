@@ -4,7 +4,7 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0b0d12;
+  background: #000;
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
 }
 
@@ -18,7 +18,8 @@ html, body {
   position: fixed;
   left: 24px;
   bottom: 24px;
-  color: #e8ecf3;
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
   pointer-events: none;
 }
 

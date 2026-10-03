@@ -1,0 +1,94 @@
+{
+  "controllers": {},
+  "folders": {
+    "Carrinho": {
+      "controllers": {
+        "velocidade máx.": 9,
+        "aceleração": 9,
+        "giro": 2.4,
+        "inclinação": 1
+      },
+      "folders": {}
+    },
+    "Materiais do carrinho": {
+      "controllers": {
+        "Carroceria (principal)": "#ff0000",
+        "Carroceria (secundária)": "#0011ff",
+        "Metal e detalhes": "#0000ff",
+        "Borracha e assento": "#2a2a30"
+      },
+      "folders": {}
+    },
+    "Câmera": {
+      "controllers": {
+        "inclinação (°)": 45,
+        "rotação (°)": 180,
+        "distância": 32,
+        "campo de visão": 35
+      },
+      "folders": {}
+    },
+    "Chão": {
+      "controllers": {
+        "cor": "#d8c9a3",
+        "grade": 0.12,
+        "tamanho do quadrado": 2
+      },
+      "folders": {}
+    },
+    "Fundo": {
+      "controllers": {
+        "cor do centro": "#5b6b8c",
+        "cor da borda": "#05060a",
+        "raio": 0.75
+      },
+      "folders": {}
+    },
+    "Sombreamento": {
+      "controllers": {
+        "limite luz/sombra": 0,
+        "suavidade da faixa": 0.03,
+        "tom da sombra": "#5a6aa8",
+        "ambiente": 0.25
+      },
+      "folders": {}
+    },
+    "Rim light": {
+      "controllers": {
+        "intensidade": 0.9,
+        "espessura (inv.)": 0.64
+      },
+      "folders": {}
+    },
+    "Retícula (quadrinhos)": {
+      "controllers": {
+        "ativar": true,
+        "espaçamento (px)": 3,
+        "tamanho máximo": 0.9,
+        "ângulo da grade": 47,
+        "início da sombra densa": 0,
+        "tom azulado": 0,
+        "cor da tinta": "#000000"
+      },
+      "folders": {}
+    },
+    "Contorno": {
+      "controllers": {
+        "espessura (px)": 1.4,
+        "suavização (FXAA)": true,
+        "sensibilidade (prof.)": 0.001,
+        "linhas em dobras": false,
+        "limite das dobras": 0.6,
+        "cor": "#000000"
+      },
+      "folders": {}
+    },
+    "Sol": {
+      "controllers": {
+        "azimute": 286,
+        "elevação": 50
+      },
+      "folders": {}
+    }
+  }
+}
