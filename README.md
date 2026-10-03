@@ -13,9 +13,11 @@ link de sala: `?sala=nome`.
 | Espaço | usar boost (pegue as esferas azuis; até 3) |
 | R | voltar ao ponto de início |
 
-Pontos: toda batida vale 1 para quem bateu, ×2 (FORTE) e ×3 (PANCADA)
-conforme a força; batida com boost vale 5 (TURBO) e, se a vítima bater na
-parede logo depois, mais 2 (PAREDE).
+Vida: cada jogador tem 100. Toda batida tira de quem levou 1, 2 (FORTE) ou
+3 (PANCADA) conforme a força de quem bateu; batida com boost tira 5 (TURBO)
+e, se a vítima bater na parede logo depois, mais 2 (PAREDE). Com a vida
+zerada, o carrinho fica 3 s nocauteado e volta com vida cheia e 2 s de
+proteção.
 
 ## Rodar localmente
 
@@ -43,21 +45,22 @@ O painel de controles ajusta física, câmera, cores e efeitos. No
 | `remoteCar.js` | carro de outro jogador, desenhado por interpolação de estados |
 | `remotePlayers.js` | cria/atualiza/remove os jogadores remotos |
 | `collision.js` | colisão cápsula × cápsula e cápsula × paredes |
-| `score.js` | regras de pontuação (quem bateu, força, intervalo) |
+| `damage.js` | regras de batida, dano e vida (quem bateu, força, nocaute) |
 | `orbs.js` | esferas de boost com posições determinísticas por sala |
 | `net.js` / `protocol.js` | conexão P2P (Trystero) / formato e validação das mensagens |
 | `paint.js` | pinturas (liveries), cores e brilho do boost |
 | `environment.js` | fundo em degradê, sol com sombra, arena |
 | `groupCamera.js` | câmera que enquadra todos os carrinhos |
 | `toon.js` / `outline.js` | shader toon com retícula / contorno em pós-processamento |
-| `hud.js` | placar, textos "+N" e inventário de boost |
+| `sparks.js` | faíscas elétricas da haste, mais fortes com a velocidade |
+| `hud.js` | quadro de vidas, textos de dano e HUD do jogador (vida + boosts) |
 | `panel.js` | painel de controles (lil-gui) |
 | `input.js` | teclado |
 
 Rede: cada jogador simula o próprio carro e manda o estado 20x por segundo;
 os outros são mostrados 100 ms no passado, interpolando entre estados reais.
 Numa batida, quem bateu resolve (calcula o próprio ricochete e manda o
-empurrão da vítima). Referências: Glenn Fiedler, *Fix Your Timestep* e
+empurrão e o dano da vítima); cada jogador é dono da própria vida. Referências: Glenn Fiedler, *Fix Your Timestep* e
 *State Synchronization*; Gabriel Gambetta, *Entity Interpolation*.
 
 ## Publicar

@@ -2,10 +2,10 @@
 // jogadores (ver net.js). Sem dependências, para poder ser testado no Node.
 //
 // Mensagens:
-//   state  { t, x, z, yaw, vx, vz, y, roll, pitch, boosting, score, livery, colors }
+//   state  { t, x, z, yaw, vx, vz, y, roll, pitch, boosting, hp, ko, shield, livery, colors }
 //          estado do carrinho de quem manda, 20x por segundo (t = relógio de simulação)
-//   hit    { target, ix, iz, points, boosted }  quem bateu: empurrão que `target` recebe
-//   bonus  { target, points }                   pontos extras para `target`
+//   hit    { target, ix, iz, damage, boosted }  quem bateu: empurrão e dano que `target` recebe
+//   wall   { damage }                           quem manda bateu na parede depois de um boost
 //   pickup { slot, gen }                        alguém pegou uma esfera
 //   orbs   [{ gen, wait }]                      estado das esferas, para quem acabou de entrar
 
@@ -37,7 +37,9 @@ export const validators = {
     }
     if (anyNull(out)) return null
     out.boosting = m.boosting === true
-    out.score = int(m.score, 0, 1e6) ?? 0
+    out.hp = int(m.hp, 0, 1000) ?? 0
+    out.ko = m.ko === true
+    out.shield = m.shield === true
     out.livery = str(m.livery, 40)
     out.colors = Array.isArray(m.colors) && m.colors.length === 2 && m.colors.every(isColor) ? m.colors : null
     return out
@@ -47,14 +49,14 @@ export const validators = {
       target: str(m?.target, 64),
       ix: num(m?.ix, -MAX_SPEED, MAX_SPEED),
       iz: num(m?.iz, -MAX_SPEED, MAX_SPEED),
-      points: int(m?.points, 0, 10),
+      damage: int(m?.damage, 0, 10),
     }
     if (anyNull(out)) return null
     out.boosted = m.boosted === true
     return out
   },
-  bonus(m) {
-    const out = { target: str(m?.target, 64), points: int(m?.points, 0, 10) }
+  wall(m) {
+    const out = { damage: int(m?.damage, 0, 10) }
     return anyNull(out) ? null : out
   },
   pickup(m) {

@@ -1,4 +1,4 @@
-// Testes das regras do jogo (física, colisão, pontuação, rede, esferas).
+// Testes das regras do jogo (física, colisão, dano e vida, rede, esferas).
 // Rodam no Node, sem navegador: `npm test`.
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
@@ -6,7 +6,7 @@ import * as THREE from 'three'
 import { Car } from '../src/car.js'
 import { RemoteCar } from '../src/remoteCar.js'
 import { measureFootprint, testCars, testArenaWalls } from '../src/collision.js'
-import { judgeHit, impactPoints, HitCooldown, scoreParams } from '../src/score.js'
+import { judgeHit, impactDamage, HitCooldown, damageParams, Health, MAX_HEALTH, KO_TIME, RESPAWN_SHIELD } from '../src/damage.js'
 import { validators } from '../src/protocol.js'
 import { Orbs } from '../src/orbs.js'
 import { pickLivery, LIVERIES } from '../src/paint.js'
@@ -103,12 +103,36 @@ describe('Colisão', () => {
   })
 })
 
-describe('Pontuação', () => {
-  test('pontos pela força de quem bateu', () => {
-    assert.equal(impactPoints(scoreParams.minImpact - 0.1), 0)
-    assert.equal(impactPoints(scoreParams.minImpact), 1)
-    assert.equal(impactPoints(scoreParams.strong), 2)
-    assert.equal(impactPoints(scoreParams.smash), 3)
+describe('Dano e vida', () => {
+  test('dano pela força de quem bateu', () => {
+    assert.equal(impactDamage(damageParams.minImpact - 0.1), 0)
+    assert.equal(impactDamage(damageParams.minImpact), 1)
+    assert.equal(impactDamage(damageParams.strong), 2)
+    assert.equal(impactDamage(damageParams.smash), 3)
+  })
+
+  test('vida desce com o dano e não fica negativa', () => {
+    const h = new Health()
+    assert.equal(h.hp, MAX_HEALTH)
+    h.damage(3)
+    assert.equal(h.hp, MAX_HEALTH - 3)
+    h.hp = 2
+    const { dealt, knockedOut } = h.damage(5)
+    assert.equal(dealt, 2)
+    assert.ok(knockedOut && h.isKO && h.hp === 0)
+  })
+
+  test('nocauteado não leva dano; volta com vida cheia e protegido', () => {
+    const h = new Health()
+    h.hp = 1
+    h.damage(1)
+    assert.equal(h.damage(5).dealt, 0)
+    let back = false
+    for (let t = 0; t < KO_TIME + 0.1; t += DT) back = h.update(DT) || back
+    assert.ok(back && !h.isKO && h.hp === MAX_HEALTH && h.isShielded)
+    assert.equal(h.damage(5).dealt, 0, 'protegido logo depois de voltar')
+    for (let t = 0; t < RESPAWN_SHIELD + 0.1; t += DT) h.update(DT)
+    assert.equal(h.damage(5).dealt, 5)
   })
 
   test('agressor, vítima e empate', () => {
@@ -130,7 +154,7 @@ describe('Pontuação', () => {
 })
 
 describe('Protocolo de rede', () => {
-  const state = { t: 1, x: 2, z: 3, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0, score: 4, colors: ['#ff0000', '#00ff00'] }
+  const state = { t: 1, x: 2, z: 3, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0, hp: 80, ko: false, colors: ['#ff0000', '#00ff00'] }
 
   test('estado válido passa', () => {
     const out = validators.state(state)
@@ -142,14 +166,15 @@ describe('Protocolo de rede', () => {
     assert.equal(validators.state({ ...state, x: NaN }), null)
     assert.equal(validators.state({ ...state, vx: '5' }), null)
     assert.equal(validators.state(null), null)
-    assert.equal(validators.hit({ target: 'a', ix: Infinity, iz: 0, points: 1 }), null)
+    assert.equal(validators.hit({ target: 'a', ix: Infinity, iz: 0, damage: 1 }), null)
     assert.equal(validators.pickup({ slot: 1.5, gen: 0 }), null)
   })
 
   test('valores exagerados são limitados, HTML em cor/nome não passa', () => {
-    assert.equal(validators.hit({ target: 'a', ix: 1e9, iz: 0, points: 1 }).ix, 60)
+    assert.equal(validators.hit({ target: 'a', ix: 1e9, iz: 0, damage: 1 }).ix, 60)
     assert.equal(validators.state({ ...state, colors: ['red"><img src=x>', '#000000'] }).colors, null)
-    assert.equal(validators.state({ ...state, score: '<b>9</b>' }).score, 0)
+    assert.equal(validators.state({ ...state, hp: '<b>9</b>' }).hp, 0)
+    assert.equal(validators.wall({ damage: 99 }), null)
   })
 })
 

@@ -25,8 +25,8 @@ function listen(action, validate, handler) {
  *   onPeerState: (peerId: string, state: object) => void,
  *   onPeerLeave: (peerId: string) => void,
  *   onPeersChange: (count: number) => void,
- *   onHit: (hit: { target: string, ix: number, iz: number, points: number, boosted: boolean }, attackerId: string) => void,
- *   onBonus: (bonus: { target: string, points: number }, fromPeerId: string) => void,
+ *   onHit: (hit: { target: string, ix: number, iz: number, damage: number, boosted: boolean }, attackerId: string) => void,
+ *   onWall: (wall: { damage: number }, peerId: string) => void,
  *   onPickup: (pickup: { slot: number, gen: number }, peerId: string) => void,
  *   onOrbs: (snapshot: object[], peerId: string) => void,
  * }} handlers
@@ -37,8 +37,8 @@ export function joinArena(roomId, handlers) {
   // Batida anunciada por quem bateu: empurrão (ix, iz) que `target` deve
   // receber e os pontos ganhos
   const hitAction = room.makeAction('hit')
-  // Pontos extras para `target` (ex.: me jogou na parede com o boost)
-  const bonusAction = room.makeAction('bonus')
+  // Quem manda bateu na parede depois de levar um boost (para mostrar o dano)
+  const wallAction = room.makeAction('wall')
   // Alguém pegou uma esfera de boost
   const pickupAction = room.makeAction('pickup')
   // Estado das esferas, mandado para quem acabou de entrar
@@ -57,7 +57,7 @@ export function joinArena(roomId, handlers) {
   }
   listen(stateAction, validators.state, (state, peerId) => handlers.onPeerState(peerId, state))
   listen(hitAction, validators.hit, handlers.onHit)
-  listen(bonusAction, validators.bonus, handlers.onBonus)
+  listen(wallAction, validators.wall, handlers.onWall)
   listen(pickupAction, validators.pickup, handlers.onPickup)
   listen(orbsAction, validators.orbs, handlers.onOrbs)
 
@@ -73,8 +73,8 @@ export function joinArena(roomId, handlers) {
     sendState: broadcast(stateAction),
     /** Anuncia para todos que eu acertei `target`. */
     sendHit: broadcast(hitAction),
-    /** Anuncia pontos extras para `target`. */
-    sendBonus: broadcast(bonusAction),
+    /** Anuncia que eu bati na parede depois de levar um boost. */
+    sendWall: broadcast(wallAction),
     /** Anuncia que eu peguei a esfera { slot, gen }. */
     sendPickup: broadcast(pickupAction),
     /** Manda o estado das esferas só para `peerId`. */

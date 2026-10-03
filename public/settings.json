@@ -13,25 +13,26 @@
         "inércia do giro (s)": 0.15,
         "inclinação": 1,
         "elasticidade da batida": 1.15,
-        "freio do empurrão": 1.6,
+        "elasticidade da parede": 0.6,
+        "freio do empurrão": 3.7,
         "quique": 1.2
       },
       "folders": {}
     },
     "Materiais do carrinho": {
       "controllers": {
-        "Carroceria (principal)": "#3a3dce",
-        "Carroceria (secundária)": "#a066e8",
+        "Carroceria (principal)": "#ff6b00",
+        "Carroceria (secundária)": "#ffc300",
         "Metal e detalhes": "#0000ff",
         "Borracha e assento": "#2a2a30"
       },
       "folders": {}
     },
-    "Pontuação (força em m/s)": {
+    "Dano (força em m/s)": {
       "controllers": {
-        "mínimo para pontuar": 2.5,
-        "FORTE (×2) a partir de": 5.5,
-        "PANCADA (×3) a partir de": 7.5
+        "mínimo para dar dano": 2.5,
+        "FORTE (2 de dano) a partir de": 5.5,
+        "PANCADA (3 de dano) a partir de": 7.5
       },
       "folders": {}
     },
@@ -39,8 +40,12 @@
       "controllers": {
         "inclinação (°)": 45,
         "rotação (°)": 180,
-        "distância": 32,
-        "campo de visão": 35
+        "campo de visão": 35,
+        "distância mínima": 22,
+        "distância máxima": 90,
+        "margem (m)": 4,
+        "antecipação (s)": 0.5,
+        "suavidade (inv.)": 3
       },
       "folders": {}
     },
@@ -48,7 +53,17 @@
       "controllers": {
         "cor": "#004852",
         "grade": 0.12,
-        "tamanho do quadrado": 2
+        "tamanho do quadrado": 2,
+        "cor da mureta": "#e8463c"
+      },
+      "folders": {}
+    },
+    "Faíscas": {
+      "controllers": {
+        "ativar": true,
+        "quantidade": 1,
+        "arcos elétricos": 1,
+        "espessura (px)": 1.5
       },
       "folders": {}
     },
@@ -78,7 +93,7 @@
     },
     "Retícula (quadrinhos)": {
       "controllers": {
-        "ativar": true,
+        "ativar": false,
         "espaçamento (px)": 3,
         "tamanho máximo": 0.9,
         "ângulo da grade": 47,

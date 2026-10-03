@@ -67,7 +67,7 @@ html, body {
 
 .scoreboard li {
   display: grid;
-  grid-template-columns: 12px 1fr auto;
+  grid-template-columns: 12px 1fr 70px 30px;
   align-items: center;
   gap: 8px;
   font-size: 14px;
@@ -87,6 +87,34 @@ html, body {
 .scoreboard .points {
   font-weight: 800;
   font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.scoreboard li.ko {
+  opacity: 0.5;
+}
+
+/* --- Barras de vida --------------------------------------------------------- */
+.hp-bar {
+  display: block;
+  height: 8px;
+  border: 2px solid #000;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.hp-fill {
+  display: block;
+  height: 100%;
+  transition: width 0.25s ease-out, background 0.25s;
+}
+
+.hp-bar.big {
+  width: 220px;
+  height: 16px;
+  border-width: 3px;
+  box-shadow: 2px 2px 0 #000;
 }
 
 /* "+N" estilo quadrinhos acima de quem bateu */
@@ -132,30 +160,58 @@ html, body {
   color: #ff7a1a;
 }
 
+.hit-popup.ko {
+  font-size: 56px;
+  color: #ffffff;
+}
+
 .hit-popup.pickup {
   font-size: 22px;
   color: #9ff6ff;
 }
 
-/* --- Inventário de boost ---------------------------------------------------- */
-.boost-hud {
+/* --- HUD do jogador: vida + boosts ------------------------------------------ */
+.player-hud {
   position: fixed;
   left: 50%;
   bottom: 24px;
   transform: translateX(-50%);
   display: grid;
   justify-items: center;
-  gap: 6px;
+  gap: 8px;
   color: #fff;
   pointer-events: none;
 }
 
-.boost-hud .slots {
+.player-hud .health {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+}
+
+.player-hud .hp-text {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+.player-hud.ko .hp-text {
+  color: #ff3d3d;
+}
+
+/* Recém-voltou do nocaute: barra piscando enquanto está protegido */
+.player-hud.shielded .hp-bar {
+  animation: shield-blink 0.25s steps(2) infinite;
+}
+
+.player-hud .slots {
   display: flex;
   gap: 10px;
 }
 
-.boost-hud .slot {
+.player-hud .slot {
   width: 30px;
   height: 30px;
   border-radius: 50%;
@@ -165,15 +221,15 @@ html, body {
   transition: background 0.15s, transform 0.15s;
 }
 
-.boost-hud .slot.full {
+.player-hud .slot.full {
   background: radial-gradient(circle at 35% 35%, #ffffff, #9ff6ff 35%, #2a9fd6);
 }
 
-.boost-hud.active .slots {
+.player-hud.boosting .slots {
   animation: boost-pulse 0.2s ease-in-out infinite alternate;
 }
 
-.boost-hud .hint {
+.player-hud .hint {
   font-size: 12px;
   font-weight: 800;
   letter-spacing: 0.08em;
@@ -184,4 +240,8 @@ html, body {
 @keyframes boost-pulse {
   from { transform: scale(1); }
   to { transform: scale(1.12); }
+}
+
+@keyframes shield-blink {
+  50% { opacity: 0.35; }
 }

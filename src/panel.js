@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import GUI from 'three/examples/jsm/libs/lil-gui.module.min.js'
 import { toonGlobals } from './toon.js'
 import { outlineParams, outlineOptions } from './outline.js'
-import { scoreParams } from './score.js'
+import { damageParams } from './damage.js'
 
 // Painel de controles (lil-gui). Os valores são guardados pelo NOME de cada
 // controle: renomear um controle faz o valor salvo dele ser ignorado.
@@ -24,10 +24,11 @@ export class ControlPanel {
    *   sun: import('./environment.js').Sun,
    *   arena: import('./environment.js').Arena,
    *   camera: import('./groupCamera.js').GroupCamera,
+   *   sparks: import('./sparks.js').SparkEffects,
    *   onRerollLivery: () => void,
    * }} deps
    */
-  constructor({ background, sun, arena, camera, onRerollLivery }) {
+  constructor({ background, sun, arena, camera, sparks, onRerollLivery }) {
     const gui = (this.gui = new GUI({ title: 'Controles' }))
 
     this.saveButton = gui.add({ save: () => this.save() }, 'save').name('Salvar configurações')
@@ -41,10 +42,10 @@ export class ControlPanel {
     this.materialsFolder.hide()
     this.liveryButton = this.materialsFolder.add({ reroll: onRerollLivery }, 'reroll').name('Sortear pintura')
 
-    const score = gui.addFolder('Pontuação (força em m/s)')
-    score.add(scoreParams, 'minImpact', 0, 9, 0.1).name('mínimo para pontuar')
-    score.add(scoreParams, 'strong', 0, 12, 0.1).name('FORTE (×2) a partir de')
-    score.add(scoreParams, 'smash', 0, 12, 0.1).name('PANCADA (×3) a partir de')
+    const damage = gui.addFolder('Dano (força em m/s)')
+    damage.add(damageParams, 'minImpact', 0, 9, 0.1).name('mínimo para dar dano')
+    damage.add(damageParams, 'strong', 0, 12, 0.1).name('FORTE (2 de dano) a partir de')
+    damage.add(damageParams, 'smash', 0, 12, 0.1).name('PANCADA (3 de dano) a partir de')
 
     const cam = gui.addFolder('Câmera')
     const axes = () => camera.updateAxes()
@@ -65,6 +66,13 @@ export class ControlPanel {
     ground.add(arena.params, 'grid', 0, 0.6, 0.01).name('grade').onChange(grid)
     ground.add(arena.params, 'tileSize', 0.5, 10, 0.5).name('tamanho do quadrado').onChange(grid)
     ground.addColor(arena.params, 'wallColor').name('cor da mureta').onChange(colors)
+
+    const sparkFolder = gui.addFolder('Faíscas')
+    sparkFolder.add(sparks.params, 'enabled').name('ativar')
+    sparkFolder.add(sparks.params, 'intensity', 0, 4, 0.05).name('quantidade')
+    sparkFolder.add(sparks.params, 'arcs', 0, 3, 0.05).name('arcos elétricos')
+    sparkFolder.add(sparks.params, 'width', 1, 8, 0.5).name('espessura (px)')
+    sparkFolder.addColor(sparks.params, 'color').name('cor')
 
     const bg = gui.addFolder('Fundo')
     const redraw = () => background.redraw()

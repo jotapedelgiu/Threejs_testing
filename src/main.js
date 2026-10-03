@@ -5,7 +5,7 @@ import { ScreenOutline } from './outline.js'
 import { Background, Sun, Arena } from './environment.js'
 import { GroupCamera } from './groupCamera.js'
 import { ControlPanel } from './panel.js'
-import { ScoreUI, BoostHud } from './hud.js'
+import { ScoreUI, PlayerHud } from './hud.js'
 import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
 import { readDriveInput, isDown, wasPressed } from './input.js'
@@ -13,14 +13,15 @@ import { joinArena } from './net.js'
 import { RemotePlayers } from './remotePlayers.js'
 import { measureFootprint, testCars, testArenaWalls } from './collision.js'
 import { Orbs } from './orbs.js'
+import { SparkEffects, findPoleTip } from './sparks.js'
 import { pickLivery, readColors, swatch, setBoostGlow } from './paint.js'
 import {
-  judgeHit, impactPoints, MIN_IMPULSE, HitCooldown,
-  BOOST_HIT_POINTS, BOOST_PUSH, WALL_BONUS_POINTS, WALL_BONUS_WINDOW, WALL_BONUS_MIN_SPEED,
-} from './score.js'
+  judgeHit, impactDamage, MIN_IMPULSE, HitCooldown, Health,
+  BOOST_HIT_DAMAGE, BOOST_PUSH, WALL_DAMAGE, WALL_DAMAGE_WINDOW, WALL_DAMAGE_MIN_SPEED,
+} from './damage.js'
 
 // Ponto de entrada: monta as peças (cena, câmera, painel, rede) e contém as
-// regras da partida (batidas, boost, pontos). Cada sistema vive no seu módulo.
+// regras da partida (batidas, boost, vida). Cada sistema vive no seu módulo.
 
 const MODEL_URL = `${import.meta.env.BASE_URL}models/BumpyCar.glb`
 // Valores do painel salvos pelo botão "Salvar configurações"
@@ -30,7 +31,9 @@ const ROOM_ID = new URLSearchParams(location.search).get('sala') || 'arena'
 const ARENA_SIZE = 100
 const NET_SEND_INTERVAL = 1 / 20 // estados por segundo para os outros jogadores
 const MAX_BOOSTS = 3
-const SPAWN_RADIUS = 5
+const SPAWN_RADIUS = 5        // nascimento ao entrar, perto do centro
+const RESPAWN_MARGIN = 10     // volta do nocaute em qualquer ponto da arena, longe da borda
+const NO_INPUT = { throttle: 0, steer: 0 }
 
 // Os IDs de material do glTF são agrupados em poucos materiais toon; cada
 // grupo vira uma cor no painel. null = peças sem material no arquivo. IDs que
@@ -65,9 +68,12 @@ const sun = new Sun(scene)
 const arena = new Arena(scene, renderer, ARENA_SIZE)
 const groupCamera = new GroupCamera(camera)
 const scoreUI = new ScoreUI()
-const boostHud = new BoostHud(MAX_BOOSTS)
+const playerHud = new PlayerHud(MAX_BOOSTS)
 const orbs = new Orbs(scene, { roomId: ROOM_ID, count: 8, half: arena.half - 6 })
-const panel = new ControlPanel({ background, sun, arena, camera: groupCamera, onRerollLivery: rerollLivery })
+const sparks = new SparkEffects(scene)
+sparks.setSize(window.innerWidth, window.innerHeight, renderer.getPixelRatio())
+outline.skipInNormalPass.push(...sparks.meshes)
+const panel = new ControlPanel({ background, sun, arena, camera: groupCamera, sparks, onRerollLivery: rerollLivery })
 const netStatus = document.getElementById('net-status')
 
 // --- Estado da partida ---------------------------------------------------------
@@ -79,16 +85,17 @@ const bodyMaterials = carMaterials.slice(0, 2).map((m) => m.material) // carroce
 
 let car = null          // meu carrinho (Car)
 let footprint = null    // cápsula de colisão, igual para todos os carrinhos
+let poleTip = null      // ponta da haste (onde saem as faíscas), em coordenadas do body
 let remotes = null      // RemotePlayers
 let net = null          // conexão com a sala
 let livery = null       // minha pintura
-let myScore = 0
+const health = new Health() // minha vida (cada jogador é dono da própria)
 let boosts = 0
 let glowing = false     // brilho do boost aplicado nos materiais (dirty flag)
 let netTimer = 0
-// Quem me acertou com boost por último: se eu bater na parede logo depois,
-// ele ganha o bônus
-let boostedBy = null    // { attacker, until }
+// Levei uma batida com boost há pouco: se bater na parede até `until`,
+// perco mais vida
+let boostedUntil = 0
 const hitCooldown = new HitCooldown()
 // Batidas que EU anunciei como agressor (para não aplicar o empurrão do outro
 // por cima, quando os dois se acharam agressores da mesma batida)
@@ -115,6 +122,7 @@ new GLTFLoader().loadAsync(MODEL_URL).then(
     // Cápsula de colisão: contorno do carro visto de cima, com ele na origem
     car.root.updateMatrixWorld(true)
     footprint = measureFootprint(model)
+    poleTip = findPoleTip(model, car.body)
     // Nasce num ponto aleatório perto do centro (jogadores não nascem juntos)
     const angle = Math.random() * Math.PI * 2
     car.spawn.set(Math.cos(angle) * SPAWN_RADIUS, 0, Math.sin(angle) * SPAWN_RADIUS)
@@ -153,6 +161,35 @@ function setNetStatus(peerCount) {
   netStatus.textContent = `Sala "${ROOM_ID}" · ${players} ${players === 1 ? 'jogador' : 'jogadores'}`
 }
 
+// Fui atingido: o empurrão e o dano calculados por quem bateu valem para mim.
+// O empurrão só é ignorado se eu também anunciei essa batida como agressor
+// (os dois se acharam agressores): aí já apliquei o meu ricochete. O dano
+// vale sempre.
+function receiveHit(hit, attackerId) {
+  const now = loop.simTime
+  if (!hitsSent.recent(attackerId, now)) {
+    hitCooldown.ready(attackerId, now)
+    car.applyImpulse(new THREE.Vector3(hit.ix, 0, hit.iz))
+  }
+  if (hit.boosted) boostedUntil = now + WALL_DAMAGE_WINDOW
+  takeDamage(hit.damage)
+}
+
+function takeDamage(amount) {
+  const { knockedOut } = health.damage(amount)
+  if (knockedOut) {
+    scoreUI.popup(car.root.position, 'ko')
+    car.endBoost()
+  }
+}
+
+// Volta do nocaute num ponto aleatório da arena, com a vida cheia
+function respawn() {
+  const range = arena.half - RESPAWN_MARGIN
+  car.spawn.set((Math.random() * 2 - 1) * range, 0, (Math.random() * 2 - 1) * range)
+  car.reset()
+}
+
 function positionOf(peerId) {
   return peerId === net.selfId ? car.root.position : remotes.get(peerId)?.car.root.position
 }
@@ -168,33 +205,28 @@ function startMultiplayer() {
     onPickup: ({ slot, gen }) => orbs.take(slot, gen),
     onPeerLeave: (peerId) => remotes.remove(peerId),
     onPeerState(peerId, state) {
-      const { liveryChanged } = remotes.applyState(peerId, state, performance.now() / 1000)
+      const { player, liveryChanged, knockedOut } = remotes.applyState(peerId, state, performance.now() / 1000)
+      if (knockedOut) scoreUI.popup(player.car.position, 'ko')
       // Mesma pintura que a minha: um dos dois sorteia de novo (o de ID menor
       // mantém, para os dois não trocarem ao mesmo tempo)
       if (liveryChanged && state.livery === livery?.name && net.selfId > peerId) rerollLivery()
     },
     onHit(hit, attackerId) {
-      // Fui atingido: o empurrão calculado por quem bateu vale para mim. Só
-      // ignoro se eu também anunciei essa batida como agressor (os dois se
-      // acharam agressores): aí já apliquei o meu ricochete
-      const now = loop.simTime
-      if (hit.target === net.selfId && !hitsSent.recent(attackerId, now)) {
-        hitCooldown.ready(attackerId, now)
-        car.applyImpulse(new THREE.Vector3(hit.ix, 0, hit.iz))
-        if (hit.boosted) boostedBy = { attacker: attackerId, until: now + WALL_BONUS_WINDOW }
-      }
-      const position = positionOf(attackerId)
-      if (hit.points && position) scoreUI.popup(position, hit.boosted ? 'turbo' : hit.points)
+      // O dano aparece em cima de quem levou a batida, para todo mundo ver
+      const position = positionOf(hit.target)
+      if (hit.damage && position) scoreUI.popup(position, hit.boosted ? 'turbo' : hit.damage)
+      if (hit.target === net.selfId) receiveHit(hit, attackerId)
     },
-    onBonus(bonus, fromPeerId) {
-      if (bonus.target === net.selfId) myScore += bonus.points
-      const position = positionOf(fromPeerId)
-      if (position) scoreUI.popup(position, 'wall')
+    // Alguém bateu na parede depois de levar um boost (o dano já foi
+    // descontado por ele; aqui é só para mostrar)
+    onWall(wall, peerId) {
+      const position = positionOf(peerId)
+      if (wall.damage && position) scoreUI.popup(position, 'wall')
     },
   })
 
   // Só no `npm run dev`: acesso pelo console do navegador para depuração
-  if (import.meta.env.DEV) window.__game = { net, get car() { return car }, remotes, orbs, loop }
+  if (import.meta.env.DEV) window.__game = { net, get car() { return car }, health, remotes, orbs, loop, sparks, camera }
 }
 
 // --- Regras da partida (rodam no passo fixo) -------------------------------------
@@ -222,23 +254,24 @@ function updateBoost() {
   }
 }
 
-// Paredes da arena: só ricochete; se alguém me jogou nelas com boost, ele
-// ganha o bônus
+// Paredes da arena: ricochete; se eu levei uma batida com boost há pouco e
+// fui parar na parede, perco mais vida
 function collideWalls(simTime) {
   for (const { normal, depth } of testArenaWalls(car.root.position, car.yaw, footprint, arena.half)) {
     const wallSpeed = car.hitWall(normal, depth)
-    if (boostedBy && simTime < boostedBy.until && wallSpeed >= WALL_BONUS_MIN_SPEED) {
-      net?.sendBonus({ target: boostedBy.attacker, points: WALL_BONUS_POINTS })
+    if (simTime < boostedUntil && wallSpeed >= WALL_DAMAGE_MIN_SPEED) {
+      boostedUntil = 0
+      net?.sendWall({ damage: WALL_DAMAGE })
       scoreUI.popup(car.root.position, 'wall')
-      boostedBy = null
+      takeDamage(WALL_DAMAGE)
     }
   }
 }
 
 // Batidas contra os outros. Cada jogador resolve só o próprio carrinho; quem
-// bateu aplica o próprio ricochete, manda o empurrão da vítima e soma os
-// pontos (a vítima espera essa mensagem). Empate (ex.: de frente): cada um
-// aplica só o próprio ricochete.
+// bateu aplica o próprio ricochete e manda o empurrão e o dano da vítima (a
+// vítima espera essa mensagem). Empate (ex.: de frente): cada um aplica só o
+// próprio ricochete e ninguém leva dano. Nocauteado não causa dano.
 function collideCars(simTime, wallTime) {
   for (const [peerId, { car: remote }] of remotes.entries()) {
     if (!remote.hasState) continue
@@ -252,19 +285,19 @@ function collideCars(simTime, wallTime) {
     const impulse = car.collisionImpulse(hit.normal, remote.velocity)
     if (impulse < MIN_IMPULSE || !hitCooldown.ready(peerId, simTime)) continue
 
-    // Com boost: vale mais, arremessa mais longe e o boost acaba na batida
+    // Com boost: tira mais, arremessa mais longe e o boost acaba na batida
     const boosted = car.isBoosting
     car.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
     if (judged.role === 'tie' && !boosted) continue
-    const points = boosted ? BOOST_HIT_POINTS : impactPoints(judged.impact)
+    // Sem dano se eu estou nocauteado ou se o outro está fora/protegido
+    const target = remotes.get(peerId)
+    const immune = health.isKO || target.ko || target.shield
+    const damage = immune ? 0 : boosted ? BOOST_HIT_DAMAGE : impactDamage(judged.impact)
     const push = impulse * (boosted ? BOOST_PUSH : 1) // a vítima vai no sentido oposto
-    net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, points, boosted })
+    net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted })
     hitsSent.ready(peerId, simTime)
     if (boosted) car.endBoost()
-    if (points) {
-      myScore += points
-      scoreUI.popup(car.root.position, boosted ? 'turbo' : points)
-    }
+    if (damage) scoreUI.popup(remote.root.position, boosted ? 'turbo' : damage)
   }
 }
 
@@ -277,7 +310,9 @@ function sendState(dt, simTime) {
     t: simTime,
     colors: readColors(bodyMaterials),
     livery: livery?.name,
-    score: myScore,
+    hp: health.hp,
+    ko: health.isKO,
+    shield: health.isShielded,
   })
 }
 
@@ -288,9 +323,11 @@ const loop = new FixedStepLoop({
     orbs.update(dt)
     if (!car) return
     car.savePrevious()
-    if (isDown('KeyR')) car.reset()
-    updateBoost()
-    car.update(dt, readDriveInput())
+    if (health.update(dt)) respawn()
+    if (isDown('KeyR') && !health.isKO) car.reset()
+    if (!health.isKO) updateBoost()
+    // Nocauteado não dirige, mas ainda pode ser empurrado
+    car.update(dt, health.isKO ? NO_INPUT : readDriveInput())
     collideWalls(simTime)
     if (net) {
       collideCars(simTime, wallTime)
@@ -302,10 +339,18 @@ const loop = new FixedStepLoop({
     remotes?.sample(wallTime)
     car?.beginRender(alpha) // pose interpolada entre os dois últimos passos
     groupCamera.update(dt, cameraSubjects())
+    if (car) sparks.update(dt, sparkEmitters())
     sun.follow(groupCamera.center, Math.max(12, groupCamera.distance * 0.55))
     scoreUI.update(dt, camera) // depois da câmera: "+N" no lugar certo deste quadro
     if (car) {
-      boostHud.render(boosts, car.isBoosting)
+      playerHud.render({
+        hp: health.hp,
+        ko: health.isKO,
+        shielded: health.isShielded,
+        koTimer: health.koTimer,
+        boosts,
+        boosting: car.isBoosting,
+      })
       renderScoreboard(dt)
     }
     outline.render()
@@ -323,17 +368,40 @@ function cameraSubjects() {
   return subjects
 }
 
+// Haste de cada carro soltando faíscas conforme a velocidade (objetos
+// reaproveitados a cada quadro)
+const emitters = []
+const emitterPool = []
+function sparkEmitters() {
+  emitters.length = 0
+  const add = (body, velocity, boosting) => {
+    const e = (emitterPool[emitters.length] ??= {})
+    e.tip = poleTip
+    e.body = body
+    e.velocity = velocity
+    // 0 parado, 1 na velocidade máxima; o boost passa disso
+    e.power = velocity.length() / car.params.maxSpeed + (boosting ? 0.5 : 0)
+    emitters.push(e)
+  }
+  add(car.body, car.velocity, car.isBoosting)
+  for (const { car: remote, boosting } of remotes.values()) {
+    if (remote.hasState) add(remote.body, remote.velocity, boosting)
+  }
+  return emitters
+}
+
 let scoreboardTimer = 0
 function renderScoreboard(dt) {
   scoreboardTimer += dt
   if (scoreboardTimer < 0.25) return // 4x por segundo basta
   scoreboardTimer = 0
-  const players = [{ name: 'Você', color: swatch(readColors(bodyMaterials)), score: myScore, isMe: true }]
+  const players = [{ name: 'Você', color: swatch(readColors(bodyMaterials)), hp: health.hp, ko: health.isKO, isMe: true }]
   for (const [peerId, player] of remotes.entries()) {
     players.push({
       name: `Jogador ${peerId.slice(0, 4).toUpperCase()}`,
       color: swatch(remotes.colors(player)),
-      score: player.score,
+      hp: player.hp,
+      ko: player.ko,
       isMe: false,
     })
   }
@@ -349,4 +417,5 @@ window.addEventListener('resize', () => {
   outline.setSize()
   background.redraw()
   toonGlobals.uPixelRatio.value = renderer.getPixelRatio()
+  sparks.setSize(window.innerWidth, window.innerHeight, renderer.getPixelRatio())
 })

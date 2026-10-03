@@ -129,6 +129,9 @@ export class ScreenOutline {
       depthTexture: new THREE.DepthTexture(1, 1),
     })
     this.normalMaterial = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide })
+    // Objetos sem superfície (ex.: faíscas em linha) ficam fora do passe de
+    // normais/profundidade: não ganham contorno nem escondem o que está atrás
+    this.skipInNormalPass = []
     // Resultado do contorno (já em sRGB), entrada do FXAA
     this.edgeTarget = new THREE.WebGLRenderTarget(1, 1)
 
@@ -190,8 +193,11 @@ export class ScreenOutline {
     const background = scene.background
     scene.background = null
     scene.overrideMaterial = this.normalMaterial
+    const skipped = this.skipInNormalPass.filter((o) => o.visible)
+    for (const o of skipped) o.visible = false
     renderer.setRenderTarget(this.normalTarget)
     renderer.render(scene, camera)
+    for (const o of skipped) o.visible = true
     scene.overrideMaterial = null
     scene.background = background
 

@@ -18,7 +18,7 @@ export class RemotePlayers {
     this.scene = scene
     this.template = template
     this.paintedMaterials = paintedMaterials
-    this.players = new Map() // peerId -> { car, bodyMaterials, livery, score, boosting }
+    this.players = new Map() // peerId -> { car, bodyMaterials, livery, hp, ko, shield, boosting }
   }
 
   get(peerId) {
@@ -46,7 +46,7 @@ export class RemotePlayers {
       const i = this.paintedMaterials.indexOf(o.material)
       if (i !== -1) o.material = bodyMaterials[i]
     })
-    const player = { car: new RemoteCar(model), bodyMaterials, livery: null, score: 0, boosting: false }
+    const player = { car: new RemoteCar(model), bodyMaterials, livery: null, hp: 0, ko: false, shield: false, boosting: false }
     this.scene.add(player.car.root)
     this.players.set(peerId, player)
     return player
@@ -60,7 +60,10 @@ export class RemotePlayers {
     const player = this.players.get(peerId) ?? this.create(peerId)
     player.car.setState(state, localNow)
     if (state.colors) writeColors(player.bodyMaterials, state.colors)
-    player.score = state.score
+    player.hp = state.hp
+    const knockedOut = state.ko && !player.ko // acabou de ser nocauteado
+    player.ko = state.ko
+    player.shield = state.shield
     // Brilho só muda o uniform quando o boost liga/desliga (dirty flag)
     if (state.boosting !== player.boosting) {
       player.boosting = state.boosting
@@ -68,7 +71,7 @@ export class RemotePlayers {
     }
     const liveryChanged = state.livery !== player.livery
     player.livery = state.livery
-    return { player, liveryChanged }
+    return { player, liveryChanged, knockedOut }
   }
 
   remove(peerId) {
