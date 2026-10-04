@@ -55,6 +55,9 @@ export class Car {
   yawRate = 0 // rad/s, com inércia
   spawn = new THREE.Vector3() // para onde o R (reset) leva o carrinho
   spawnYaw = 0                // e virado para onde
+  // Lentidão (ex.: rastro do míssil): multiplica a velocidade máxima. O boost
+  // ainda passa por cima (é a fuga)
+  speedScale = 1
   // Conta os teletransportes (reset/volta do nocaute). Vai pela rede: quem vê
   // o carro sabe que foi um salto e não um movimento, e não interpola
   teleports = 0
@@ -145,7 +148,7 @@ export class Car {
         this.speed += this.pedal * p.brake * dt
       } else {
         // Curva de aceleração: forte na arrancada, cai perto da velocidade máxima
-        const limit = this.pedal > 0 ? p.maxSpeed : p.reverseSpeed
+        const limit = this.pedal > 0 ? p.maxSpeed * this.speedScale : p.reverseSpeed
         const ratio = Math.min(Math.abs(this.speed) / limit, 1)
         const taper = 1 - Math.pow(ratio, p.accelCurve)
         this.speed += this.pedal * p.acceleration * taper * dt
@@ -160,8 +163,10 @@ export class Car {
     this.boostTime = Math.max(0, this.boostTime - dt)
     if (this.isBoosting) {
       this.speed = Math.max(this.speed, p.maxSpeed * p.boostSpeed)
-    } else if (this.speed > p.maxSpeed) {
-      this.speed = Math.max(p.maxSpeed, this.speed - p.drag * 2 * dt)
+    } else if (this.speed > p.maxSpeed * this.speedScale) {
+      // Acima do teto: cai sem tranco (lento, cai bem mais rápido)
+      const fall = this.speedScale < 1 ? p.drag * 6 : p.drag * 2
+      this.speed = Math.max(p.maxSpeed * this.speedScale, this.speed - fall * dt)
     }
     this.speed = Math.max(this.speed, -p.reverseSpeed)
 

@@ -24,7 +24,7 @@ import { Presence } from './presence.js'
 import { MenuUI } from './menu.js'
 import { newRoomCode, normalizeCode, hostOf } from './lobby.js'
 import { pickLivery, readColors, swatch, setBoostGlow, setUltimateGlow, MATERIAL_GROUPS, DEFAULT_GROUP, materialGroup } from './paint.js'
-import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, ULT_STORE_TIME } from './ultimate.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, ULT_STORE_TIME } from './ultimate.js'
 import { UltimateView } from './ultimateView.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, maxZonesFor } from './medkit.js'
 import { MedkitView } from './medkitView.js'
@@ -472,6 +472,8 @@ function beginMatch(map, late = false) {
   medkit.reset()
   zoneHeal.carry = 0
   stunUntil = 0
+  missiles.length = 0
+  slowUntil = 0
   if (testMode) {
     spawnAt(TEST_SPAWN) // de frente para os bonecos
     if (!dummies.size) addDummy()
@@ -556,6 +558,8 @@ function startMultiplayer() {
         const from = positionOf(attackerId)
         if (from && position) ultView.bolt(tmpBoltFrom.copy(from).setY(2.6), tmpBoltTo.copy(position).setY(0.8))
         if (position) scoreUI.popup(position, hit.stun ? 'stun' : 'zap', hit.damage)
+      } else if (hit.rocket) {
+        if (position) scoreUI.popup(position, 'rocket', hit.damage) // míssil
       } else if (hit.blast) {
         if (position) scoreUI.popup(position, 'blast', hit.damage) // Onda de choque
       } else if (hit.damage && position) {
@@ -577,8 +581,10 @@ function startMultiplayer() {
 // Estado do carro de outro jogador (ou de um boneco do campo de testes)
 function handlePeerState(peerId, state) {
   if (!remotes) return // carro ainda carregando
-  const { player, liveryChanged, knockedOut, ultStarted } = remotes.applyState(peerId, state, performance.now() / 1000)
+  const { player, liveryChanged, knockedOut, ultStarted, missilesFired: fired } = remotes.applyState(peerId, state, performance.now() / 1000)
   if (knockedOut) scoreUI.popup(player.car.position, 'ko')
+  // Mísseis que ele disparou (contador no estado: não se perde nenhum)
+  for (let i = 0; i < fired; i++) launchMissile(player.car.root.position, state.yaw, peerId)
   if (ultStarted) {
     const spec = ULTIMATES[state.ult]
     announce(`⚡ ${playerName(peerId)} ACTIVATED ${spec.name}!`, spec.enemyHint, 'enemy')
@@ -591,7 +597,7 @@ function handlePeerState(peerId, state) {
 
 // Só no `npm run dev`: acesso pelo console do navegador para depuração
 function exposeDebug() {
-  if (import.meta.env.DEV) window.__game = { get boosts() { return boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
+  if (import.meta.env.DEV) window.__game = { launchMissile, missiles, get boosts() { return boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
 }
 
 // --- Regras da partida (rodam no passo fixo) -------------------------------------
@@ -716,6 +722,7 @@ function sendState(dt, simTime) {
     ko: health.isKO,
     shield: health.isShielded,
     ult: ultSlot.active,
+    ms: missilesFired,
   })
 }
 
@@ -738,7 +745,7 @@ function enterTestRange(name) {
     onFreeToggle: (on) => (freeUltimate = on),
     actions: {
       giveUltimate(kind) {
-        ultSlot.kind = null // troca o guardado pelo escolhido
+        ultSlot.clearStored() // troca o guardado pelo escolhido
         ultSlot.give(kind)
         announce(`⚡ ${ULTIMATES[kind].name} READY`, 'press E to use', 'mine')
       },
@@ -926,6 +933,43 @@ function ultTargets() {
 
 // Onda de choque: explosão única. Conta como batida com boost (boosted): quem
 // for arremessado contra a mureta leva o dano extra de PAREDE
+// Míssil: cruza o mapa em linha reta; o rastro deixa lento quem passa
+// (menos quem atirou). Todos simulam o mesmo voo; o acerto direto é de quem
+// atirou. Lista: { shot, owner }
+const missiles = []
+const missileShots = [] // só os MissileShot, para o desenho (reaproveitada)
+let slowUntil = 0       // lento até este instante da simulação
+let missilesFired = 0   // vai no estado do carro: os outros lançam um a cada aumento
+
+function launchMissile(carPosition, yaw, owner) {
+  const dir = { x: Math.sin(yaw), z: Math.cos(yaw) }
+  const origin = { x: carPosition.x + dir.x * SHOCK_NOSE, z: carPosition.z + dir.z * SHOCK_NOSE }
+  missiles.push({ shot: new MissileShot(ULTIMATES.missile, origin, dir, arena.halfX, arena.halfZ), owner })
+}
+
+function updateMissiles(dt, simTime) {
+  const mine = net.selfId
+  for (const { shot, owner } of missiles) {
+    // O meu míssil acerta quem estiver no caminho (ele continua voando)
+    for (const h of shot.update(dt, owner === mine ? ultTargets() : [])) {
+      net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage: h.damage, boosted: false, rocket: true })
+      scoreUI.popup(remotes.get(h.id).car.root.position, 'rocket', h.damage)
+    }
+  }
+  for (let i = missiles.length - 1; i >= 0; i--) if (missiles[i].shot.expired) missiles.splice(i, 1)
+  missileShots.length = 0
+  for (const m of missiles) missileShots.push(m.shot)
+
+  // Em cima do rastro de outro: lento (e mais um pouco depois de sair)
+  const pos = car.root.position
+  const onTrail = !health.isKO && missiles.some((m) => m.owner !== mine && m.shot.trailContains(pos.x, pos.z))
+  const wasSlow = simTime < slowUntil
+  if (onTrail) slowUntil = simTime + ULTIMATES.missile.slowLinger
+  const slow = simTime < slowUntil
+  car.speedScale = slow ? ULTIMATES.missile.slow : 1
+  if (slow && !wasSlow) scoreUI.popup(pos, 'slow')
+}
+
 // Faixa na frente do carro, na direção para onde ele aponta. O carro para e
 // fica sem controle até a onda acabar (ultSlot.active), e pode levar dano
 let shockCast = null
@@ -990,6 +1034,10 @@ function updateUltimate(dt, stunned) {
     announce(`⚡ ${ULTIMATES[kind].name}!`, ULTIMATES[kind].hint, 'mine')
     if (kind === 'overcharge') storm.reset()
     if (kind === 'shockwave') fireShockwave()
+    if (kind === 'missile') {
+      launchMissile(car.root.position, car.yaw, net.selfId)
+      missilesFired++
+    }
   }
   if (health.isKO) ultSlot.stop() // nocauteado: o poder em uso acaba
   if (ultSlot.active !== 'shockwave') shockCast = null // (cancela a onda no meio)
@@ -1031,7 +1079,7 @@ function renderUltimate(dt) {
     if (p.ult === 'overcharge') addStorm(p.car.root.position, p.ult)
     enemyPowered ??= id
   }
-  ultView.update(dt, { phase: ultimate.phase, storms: activeStorms })
+  ultView.update(dt, { phase: ultimate.phase, storms: activeStorms, missiles: missileShots })
 
   // Brilho da carroceria: pulsa com o ultimate; azul no boost
   const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 70)
@@ -1159,6 +1207,7 @@ const loop = new FixedStepLoop({
       collideCars(simTime, wallTime)
       if (playing) updateUltimate(dt, stunned)
       if (playing) updateMedkit(dt)
+      if (playing) updateMissiles(dt, simTime)
       sendState(dt, simTime)
       if (testMode) updateDummies(dt, simTime)
     }
@@ -1188,8 +1237,12 @@ const loop = new FixedStepLoop({
         boosts,
         boosting: car.isBoosting,
         boostLocked: boostLocked(),
+        // Com o Míssil na mão, as bolinhas de boost mostram os mísseis que restam
+        missiles: ultSlot.kind === 'missile' ? ultSlot.charges : null,
         ult: {
           stored: ultSlot.kind && ULTIMATES[ultSlot.kind].name,
+          ready: ultSlot.ready,
+          charges: ultSlot.charges,
           storedLeft: ultSlot.storedLeft,
           active: ultSlot.active && ULTIMATES[ultSlot.active].name,
           activeLeft: ultSlot.activeLeft,

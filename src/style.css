@@ -1077,3 +1077,29 @@ body.in-menu .test-panel {
   border-color: #4cd964;
   box-shadow: 4px 4px 0 #000, 0 0 18px #4cd964;
 }
+
+/* Míssil: lentidão do rastro */
+.hit-popup.slow {
+  font-size: 30px;
+  color: #7cf3ff;
+}
+
+/* Míssil na mão: as bolinhas de boost viram mísseis */
+.player-hud.missile-mode .slot.full {
+  position: relative;
+  background: radial-gradient(circle at 35% 35%, #ffffff, #ffb070 35%, #ff6a00);
+}
+
+.player-hud.missile-mode .slot.full::after {
+  content: '\1F680';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+}
+
+.player-hud.missile-mode .hint {
+  color: #ffb070;
+  opacity: 1;
+}

@@ -19,7 +19,7 @@ import { newRoomCode, normalizeCode, cleanName, hostOf, CODE_LENGTH } from '../s
 import { TireWalls, placeTireWalls, prepareTireWall } from '../src/tireWalls.js'
 import { distanceToSegment } from '../src/collision.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from '../src/spawns.js'
-import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME } from '../src/ultimate.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME } from '../src/ultimate.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
 
 const DT = 1 / 60
@@ -890,4 +890,89 @@ describe('Zona de cura', () => {
     assert.equal(validators.medkit({ v: 3, zones: Array(9).fill({ id: 1, x: 0, z: 0, left: 1 }) }), null, 'zonas demais')
   })
 
+})
+
+describe('Míssil', () => {
+  const spec = ULTIMATES.missile
+  // Saindo de x = -40 para +x numa arena de ±45 × ±27,5
+  const shoot = () => new MissileShot(spec, { x: -40, z: 0 }, { x: 1, z: 0 }, 45, 27.5)
+  const fly = (s, seconds, targets = []) => {
+    const hits = []
+    for (let t = 0; t < seconds; t += 1 / 60) hits.push(...s.update(1 / 60, targets))
+    return hits
+  }
+
+  test('cruza o mapa em linha reta até a mureta', () => {
+    const s = shoot()
+    assert.ok(Math.abs(s.length - 85) < 1e-9)
+    fly(s, s.length / spec.speed + 0.1)
+    assert.ok(!s.flying)
+    assert.ok(Math.abs(s.position.x - 45) < 1e-6)
+    const diagonal = new MissileShot(spec, { x: 0, z: 0 }, { x: Math.SQRT1_2, z: Math.SQRT1_2 }, 45, 27.5)
+    assert.ok(Math.abs(diagonal.length - 27.5 * Math.SQRT2) < 1e-6, 'para no primeiro lado que encontrar')
+  })
+
+  test('atravessa quem está no caminho (uma vez cada) e continua', () => {
+    const s = shoot()
+    const targets = [
+      { id: 'a', x: -20, z: 0.5, immune: false },
+      { id: 'b', x: 10, z: -1, immune: false },
+      { id: 'longe', x: 0, z: 8, immune: false },
+    ]
+    const hits = fly(s, 3, targets)
+    assert.deepEqual(hits.map((h) => h.id), ['a', 'b'])
+    assert.equal(hits[0].damage, spec.damage)
+    assert.deepEqual([hits[0].dx, hits[0].dz], [1, 0], 'empurra na direção do míssil')
+  })
+
+  test('rastro: só onde o míssil já passou, e some depois', () => {
+    const s = shoot()
+    fly(s, 0.5) // ~22 m percorridos
+    assert.ok(s.trailContains(-30, 1))
+    assert.ok(!s.trailContains(10, 0), 'ainda não chegou ali')
+    assert.ok(!s.trailContains(-30, 4), 'fora da largura')
+    fly(s, s.length / spec.speed + spec.trailLife)
+    assert.ok(s.expired && !s.trailContains(-30, 0))
+  })
+
+  test('lentidão: o carro não passa da fração da velocidade máxima', () => {
+    const c = makeCar()
+    c.speedScale = spec.slow
+    run(c, 6, { throttle: 1, steer: 0 })
+    assert.ok(c.speed <= c.params.maxSpeed * spec.slow + 0.01, `velocidade ${c.speed.toFixed(2)}`)
+    c.speedScale = 1
+    run(c, 6, { throttle: 1, steer: 0 })
+    assert.ok(c.speed > c.params.maxSpeed * 0.9, 'sem lentidão volta ao normal')
+  })
+
+  test('2 mísseis por item: o 2º não espera a recarga; depois a vaga libera', () => {
+    const slot = new UltimateSlot()
+    slot.give('missile')
+    assert.equal(slot.charges, 2)
+    assert.equal(slot.activate(), 'missile')
+    assert.equal(slot.kind, 'missile', 'ainda tem 1 guardado')
+    assert.ok(!slot.canPickUp, 'não pega outro item enquanto tiver míssil')
+    assert.equal(slot.cooldown, ULT_COOLDOWN, 'a recarga começa no 1º tiro')
+    assert.ok(!slot.ready, 'intervalo entre tiros')
+    for (let t = 0; t < spec.duration + 0.05; t += 0.05) slot.update(0.05)
+    assert.ok(slot.ready && slot.cooldown > 50, '2º tiro liberado mesmo com a recarga correndo')
+    assert.equal(slot.activate(), 'missile')
+    assert.equal(slot.kind, null)
+    assert.ok(slot.canPickUp)
+    assert.equal(slot.activate(), null, 'acabaram')
+  })
+
+  test('o míssil que sobrou também vence no prazo', () => {
+    const slot = new UltimateSlot()
+    slot.give('missile')
+    slot.activate()
+    let event = null
+    for (let t = 0; t < ULT_STORE_TIME + 1; t += 0.1) event = slot.update(0.1) ?? event
+    assert.equal(event, 'expired')
+    assert.equal(slot.charges, 0)
+  })
+
+  test('mensagem de batida do míssil', () => {
+    assert.equal(validators.hit({ target: 'x', ix: 14, iz: 0, damage: 20, rocket: true }).rocket, true)
+  })
 })

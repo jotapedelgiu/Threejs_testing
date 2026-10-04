@@ -24,6 +24,8 @@ const POPUPS = {
   ultget: { text: () => '+ULT', cls: 'zap' },
   blast: { text: (n) => (n ? `-${n} BOOM!` : 'BOOM!'), cls: 'blast' },
   heal: { text: (n) => (n ? `+${n} HP` : '+HP'), cls: 'heal' },
+  rocket: { text: (n) => (n ? `-${n} DIRECT HIT!` : 'DIRECT HIT!'), cls: 'blast' },
+  slow: { text: () => 'SLOWED!', cls: 'slow' },
 }
 
 const el = (tag, className, text) => {
@@ -192,13 +194,14 @@ export class PlayerHud {
   }
 
   /**
-   * @param {{ hp, ko, shielded, koTimer, boosts, boosting, boostLocked,
-   *   ult: { stored: string | null, storedLeft: number, active: string | null, activeLeft: number, cooldown: number } }} s
-   *   ult.stored/active = nome do ultimate guardado / em uso; storedLeft = s até perder o guardado
+   * @param {{ hp, ko, shielded, koTimer, boosts, boosting, boostLocked, missiles: number | null,
+   *   ult: { stored: string | null, ready: boolean, charges: number, storedLeft: number, active: string | null, activeLeft: number, cooldown: number } }} s
+   *   ult.stored/active = nome do ultimate guardado / em uso; storedLeft = s até perder o guardado;
+   *   missiles = com o Míssil na mão, quantos restam (as bolinhas de boost viram mísseis)
    */
-  render({ hp, ko, shielded, koTimer, boosts, boosting, boostLocked, ult }) {
-    const ultKey = `${ult.stored}:${Math.ceil(ult.storedLeft)}:${ult.active}:${Math.ceil(ult.activeLeft)}:${Math.ceil(ult.cooldown)}`
-    const key = `${hp}:${ko}:${shielded}:${Math.ceil(koTimer)}:${boosts}:${boosting}:${boostLocked}:${ultKey}`
+  render({ hp, ko, shielded, koTimer, boosts, boosting, boostLocked, missiles = null, ult }) {
+    const ultKey = `${ult.stored}:${ult.ready}:${ult.charges}:${Math.ceil(ult.storedLeft)}:${ult.active}:${Math.ceil(ult.activeLeft)}:${Math.ceil(ult.cooldown)}`
+    const key = `${hp}:${ko}:${shielded}:${Math.ceil(koTimer)}:${boosts}:${boosting}:${boostLocked}:${missiles}:${ultKey}`
     if (key === this.lastKey) return
     this.lastKey = key
     this.health.set(hp)
@@ -206,25 +209,31 @@ export class PlayerHud {
     this.health.root.classList.toggle('ko', ko)
     this.health.root.classList.toggle('shielded', shielded)
     this.root.classList.toggle('boosting', boosting)
-    // Ultimate na mão: boost travado
-    this.root.classList.toggle('boost-locked', boostLocked)
-    this.boostHint.textContent = boostLocked ? 'BOOST LOCKED: use your ult (E)' : 'SPACE: boost · E: ult'
-    this.slots.forEach((s, i) => s.classList.toggle('full', i < boosts))
+    // Míssil na mão: as bolinhas de boost viram os mísseis que restam
+    const missileMode = missiles !== null
+    this.root.classList.toggle('missile-mode', missileMode)
+    // Outro ultimate na mão: boost travado
+    this.root.classList.toggle('boost-locked', boostLocked && !missileMode)
+    this.boostHint.textContent = missileMode
+      ? `E: fire missile (${missiles} left)`
+      : boostLocked ? (ult.stored ? 'BOOST LOCKED: use your ult (E)' : 'BOOST LOCKED') : 'SPACE: boost · E: ult'
+    this.slots.forEach((s, i) => s.classList.toggle('full', i < (missileMode ? missiles : boosts)))
     this.renderUlt(ult)
   }
 
-  renderUlt({ stored, storedLeft, active, activeLeft, cooldown }) {
+  renderUlt({ stored, ready, charges, storedLeft, active, activeLeft, cooldown }) {
     const wait = Math.ceil(cooldown)
     const expires = Math.ceil(storedLeft)
+    const name = stored && charges > 1 ? `${stored} ×${charges}` : stored
     let text, state
-    if (active) {
+    if (active && !stored) {
       text = `${active} · ${Math.ceil(activeLeft)}s`
       state = 'active'
-    } else if (stored && wait > 0) {
-      text = `${stored} · ready in ${wait}s`
+    } else if (stored && !ready && wait > 0 && !active) {
+      text = `${name} · ready in ${wait}s`
       state = 'stored'
     } else if (stored) {
-      text = `${stored} · E · ${expires}s`
+      text = `${name} · E · ${expires}s`
       state = 'ready'
     } else if (wait > 0) {
       text = `cooldown ${wait}s`

@@ -4,12 +4,13 @@
 //
 // Mensagens:
 //   state  { t, x, z, yaw, vx, vz, y, roll, pitch, boosting, tp, hp, ko, shield, livery, colors, ult }
-//          (ult = tipo do ultimate em uso agora, ou null)
+//          (ult = tipo do ultimate em uso agora, ou null; ms = mísseis disparados até agora:
+//          aumentou = lançar um míssil daquele carro)
 //          (tp = contador de teletransportes: mudou, não interpola)
 //          estado do carrinho de quem manda, 20x por segundo (t = relógio de simulação)
-//   hit    { target, ix, iz, damage, boosted, stun, zap, blast }  quem bateu: empurrão e dano que
-//                                               `target` recebe (stun = s atordoado; zap = raio da
-//                                               Sobrecarga; blast = Onda de choque)
+//   hit    { target, ix, iz, damage, boosted, stun, zap, blast, rocket }  quem bateu: empurrão e
+//                                               dano que `target` recebe (stun = s atordoado; zap =
+//                                               raio da Sobrecarga; blast = Onda de choque; rocket = míssil)
 //   wall   { damage }                           quem manda bateu na parede depois de um boost
 //   pickup { slot, gen }                        alguém pegou uma esfera
 //   layout { seed, since, orbs: [{ gen, wait }] } mapa da partida + esferas, para quem acabou de entrar
@@ -68,6 +69,7 @@ export const validators = {
     out.livery = str(m.livery, 40)
     out.colors = Array.isArray(m.colors) && m.colors.length === 2 && m.colors.every(isColor) ? m.colors : null
     out.ult = ULT_KINDS.includes(m.ult) ? m.ult : null
+    out.ms = int(m.ms, 0, 1e6) ?? 0
     return out
   },
   hit(m) {
@@ -82,6 +84,7 @@ export const validators = {
     out.stun = num(m.stun, 0, 3) ?? 0
     out.zap = m.zap === true
     out.blast = m.blast === true
+    out.rocket = m.rocket === true
     return out
   },
   wall(m) {

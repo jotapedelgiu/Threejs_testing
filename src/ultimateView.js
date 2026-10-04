@@ -12,6 +12,8 @@ import { ULTIMATES } from './ultimate.js'
 //  - raios do dono até cada alvo atingido
 //  - a Onda de choque: faixa no chão piscando (preparação) e a frente da
 //    onda correndo por ela (disparo)
+//  - o Míssil voando e o rastro reto (verde, como a lentidão do LoL) que deixa
+//    lento, com contorno nas bordas e na ponta
 
 const ELECTRIC = new THREE.Color('#ffd21f')
 const BOLT_SEGMENTS = 8
@@ -20,6 +22,9 @@ const BOLT_LIFE = 0.18 // s
 const BEAM_HEIGHT = 40
 const MAX_STORMS = 8 // ao mesmo tempo (um por jogador)
 const MAX_WAVES = 4
+const MAX_MISSILES = 4
+const TRAIL_COLOR = '#4cff6a'
+const TRAIL_FADE = 1.5 // s finais em que o rastro vai sumindo
 const WAVE_FADE = 0.35 // s da faixa sumir depois que a onda chega ao fim
 const WAVE_COLOR = new THREE.Color('#ffb347')
 const tmpA = new THREE.Vector3()
@@ -107,6 +112,33 @@ export class UltimateView {
       return parts
     })
 
+    // Mísseis: o projétil e o rastro. Por enquanto o míssil é uma cápsula;
+    // para usar um modelo, troque o conteúdo de `missileMesh()` (o modelo
+    // deve apontar para +Z, que é a direção do voo)
+    this.trailMeshes = []
+    this.missiles = Array.from({ length: MAX_MISSILES }, () => {
+      const group = new THREE.Group()
+      const { trailWidth } = ULTIMATES.missile
+      const flat = (geometry, x) => {
+        const m = new THREE.Mesh(geometry, this.ringMaterial(0))
+        m.material.color.set(TRAIL_COLOR)
+        m.position.set(x, 0.05, 0)
+        group.add(m)
+        this.trailMeshes.push(m)
+        return m
+      }
+      const trail = flat(strip(trailWidth, 1), 0)
+      // Contorno: duas bordas que acompanham o comprimento + a ponta
+      const edges = [-1, 1].map((side) => flat(strip(0.22, 1), side * trailWidth / 2))
+      const cap = flat(strip(trailWidth + 0.22, 0.22), 0)
+      const missile = missileMesh()
+      missile.position.y = 1.2
+      group.add(missile)
+      group.visible = false
+      scene.add(group)
+      return { group, trail, edges, cap, missile }
+    })
+
     // Raios: uma única malha de linhas grossas para todos
     const geometry = new LineSegmentsGeometry()
     geometry.setPositions(new Float32Array(MAX_BOLTS * BOLT_SEGMENTS * 6))
@@ -130,7 +162,7 @@ export class UltimateView {
 
   /** Malhas que o contorno deve ignorar (transparentes / brilho). */
   get meshes() {
-    return [this.beam, this.pad, this.boltLines, ...this.stormMeshes, ...this.waveMeshes]
+    return [this.beam, this.pad, this.boltLines, ...this.stormMeshes, ...this.waveMeshes, ...this.trailMeshes]
   }
 
   /** Linhas grossas medem em pixels: chamar ao criar e ao redimensionar. */
@@ -162,10 +194,10 @@ export class UltimateView {
 
   /**
    * @param {number} dt
-   * @param {{ phase: string, storms: { position: THREE.Vector3, radius: number }[] }} state
-   *   storms = carros com a Sobrecarga ativa
+   * @param {{ phase: string, storms: { position: THREE.Vector3, radius: number }[], missiles: import('./ultimate.js').MissileShot[] }} state
+   *   storms = carros com a Sobrecarga ativa; missiles = mísseis voando ou com rastro
    */
-  update(dt, { phase, storms }) {
+  update(dt, { phase, storms, missiles = [] }) {
     this.time += dt
     const t = this.time
 
@@ -191,7 +223,31 @@ export class UltimateView {
     this.stormMaterial.opacity = 0.55 + 0.35 * Math.abs(Math.sin(t * 9))
 
     this.updateWaves(dt)
+    this.updateMissiles(missiles)
     this.updateBolts(dt)
+  }
+
+  updateMissiles(shots) {
+    this.missiles.forEach((m, i) => {
+      const shot = shots[i]
+      m.group.visible = !!shot
+      if (!shot) return
+      m.group.position.set(shot.origin.x, 0, shot.origin.z)
+      m.group.rotation.y = Math.atan2(shot.dir.x, shot.dir.z)
+      const traveled = shot.traveled
+      m.missile.visible = shot.flying
+      m.missile.position.z = traveled
+      m.missile.rotation.z = this.time * 12 // gira no próprio eixo
+      const length = Math.max(traveled, 0.001)
+      m.trail.scale.z = length
+      for (const e of m.edges) e.scale.z = length
+      m.cap.position.z = Math.max(traveled - 0.22, 0)
+      // Rastro: forte enquanto existe, sumindo nos segundos finais
+      const left = shot.length / shot.spec.speed + shot.spec.trailLife - shot.time
+      const fade = Math.min(1, left / TRAIL_FADE)
+      m.trail.material.opacity = 0.3 * fade * (0.85 + 0.15 * Math.sin(this.time * 8))
+      for (const e of [...m.edges, m.cap]) e.material.opacity = 0.9 * fade
+    })
   }
 
   updateWaves(dt) {
@@ -261,4 +317,14 @@ export class UltimateView {
     this.boltLines.geometry.instanceCount = this.bolts.length * BOLT_SEGMENTS
     this.boltLines.geometry.attributes.instanceStart.data.needsUpdate = true
   }
+}
+
+// Míssil provisório: cápsula laranja brilhante deitada, apontando para +Z
+function missileMesh() {
+  const mesh = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.35, 1.6, 6, 16).rotateX(Math.PI / 2),
+    createToonMaterial({ color: '#ff8a2a', emissive: '#7a2a00', glossiness: 10 }),
+  )
+  mesh.castShadow = true
+  return mesh
 }

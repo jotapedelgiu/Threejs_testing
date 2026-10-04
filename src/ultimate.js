@@ -56,6 +56,26 @@ export const ULTIMATES = {
     hint: 'aim and fire: you are rooted while it casts',
     enemyHint: 'get out of the line!',
   },
+  // Míssil: 2 tiros (os boosts "viram mísseis" enquanto estiver com ele).
+  // Cada um sai da frente do carro e cruza o mapa em linha reta até a mureta
+  // (passa por cima de bastões e pneus). Quem estiver no caminho leva dano e
+  // é empurrado (ele continua voando). Atrás fica um rastro reto que deixa
+  // lento quem passar por ele (menos quem atirou). Quem atira não para
+  missile: {
+    name: 'MISSILE',
+    charges: 2,       // tiros por item
+    duration: 0.6,    // s entre um tiro e outro (o voo continua sozinho)
+    speed: 45,        // m/s
+    damage: 20,       // acerto direto (0 = só o rastro)
+    push: 14,         // m/s na direção do míssil
+    hitRadius: 1.4,   // m em volta do míssil
+    trailWidth: 2.4,  // m
+    trailLife: 6,     // s que o rastro fica depois que o míssil chega na mureta
+    slow: 0.45,       // velocidade máxima de quem está no rastro (fração)
+    slowLinger: 0.8,  // s que a lentidão dura depois de sair do rastro
+    hint: 'fire across the map: the trail slows',
+    enemyHint: 'missile incoming! stay off the trail',
+  },
 }
 export const ULT_KINDS = Object.keys(ULTIMATES)
 
@@ -141,6 +161,8 @@ export class UltimateSlot {
 
   reset() {
     this.kind = null    // guardado, esperando para usar
+    this.charges = 0    // usos que restam do guardado (o Míssil tem 2)
+    this.started = false // já usou a 1ª carga: as outras não esperam a recarga
     this.storedLeft = 0 // s até o guardado se perder
     this.active = null  // em uso agora
     this.activeLeft = 0 // s de poder que faltam
@@ -154,25 +176,39 @@ export class UltimateSlot {
 
   /** Dá para usar agora? */
   get ready() {
-    return !!this.kind && !this.active && this.cooldown <= 0
+    return !!this.kind && !this.active && (this.cooldown <= 0 || this.started)
   }
 
   give(kind) {
     if (this.kind) return false
     this.kind = kind
+    this.charges = ULTIMATES[kind].charges ?? 1
+    this.started = false
     this.storedLeft = ULT_STORE_TIME
     return true
   }
 
-  /** Usa o guardado. @returns o tipo ativado, ou null */
+  /**
+   * Usa uma carga do guardado. A recarga começa na primeira; as seguintes
+   * (Míssil) saem sem esperar. @returns o tipo ativado, ou null
+   */
   activate() {
     if (!this.ready) return null
-    this.active = this.kind
+    const kind = this.kind
+    if (!this.started) this.cooldown = ULT_COOLDOWN
+    this.active = kind
+    this.activeLeft = ULTIMATES[kind].duration
+    this.charges--
+    this.started = this.charges > 0
+    if (this.charges <= 0) this.clearStored()
+    return kind
+  }
+
+  clearStored() {
     this.kind = null
+    this.charges = 0
+    this.started = false
     this.storedLeft = 0
-    this.activeLeft = ULTIMATES[this.active].duration
-    this.cooldown = ULT_COOLDOWN
-    return this.active
   }
 
   /** Nocaute: o poder em uso acaba (o guardado continua guardado). */
@@ -190,8 +226,7 @@ export class UltimateSlot {
     if (this.kind) {
       this.storedLeft -= dt
       if (this.storedLeft <= 0) {
-        this.kind = null
-        this.storedLeft = 0
+        this.clearStored()
         return 'expired'
       }
     }
@@ -313,5 +348,82 @@ export class ShockwaveCast {
       })
     }
     return hits
+  }
+}
+
+/**
+ * Um míssil em voo (e o rastro dele). Todos calculam o mesmo voo a partir de
+ * onde e para onde ele saiu; o acerto direto é resolvido por quem atirou.
+ */
+export class MissileShot {
+  /**
+   * @param {{ x: number, z: number }} origin frente do carro de quem atirou
+   * @param {{ x: number, z: number }} dir direção (unitária)
+   * @param {number} halfX metade da largura da arena (até a mureta)
+   * @param {number} halfZ metade da profundidade
+   */
+  constructor(spec, origin, dir, halfX, halfZ) {
+    this.spec = spec
+    this.origin = { x: origin.x, z: origin.z }
+    this.dir = { x: dir.x, z: dir.z }
+    // Até onde ele vai: o primeiro lado da arena que a reta encontra
+    const reach = (o, d, half) => (d > 1e-9 ? (half - o) / d : d < -1e-9 ? (-half - o) / d : Infinity)
+    this.length = Math.max(0, Math.min(reach(origin.x, dir.x, halfX), reach(origin.z, dir.z, halfZ)))
+    this.time = 0
+    this.hit = new Set()
+  }
+
+  /** m percorridos (a ponta do rastro). */
+  get traveled() {
+    return Math.min(this.length, this.time * this.spec.speed)
+  }
+
+  get flying() {
+    return this.time * this.spec.speed < this.length
+  }
+
+  /** Rastro já sumiu (e o míssil já chegou)? */
+  get expired() {
+    return this.time >= this.length / this.spec.speed + this.spec.trailLife
+  }
+
+  /** Onde está o míssil agora. */
+  get position() {
+    const d = this.traveled
+    return { x: this.origin.x + this.dir.x * d, z: this.origin.z + this.dir.z * d }
+  }
+
+  // Ponto em relação à reta: ao longo (m) e para o lado (m)
+  local(x, z) {
+    const rx = x - this.origin.x, rz = z - this.origin.z
+    return { along: rx * this.dir.x + rz * this.dir.z, side: Math.abs(rx * this.dir.z - rz * this.dir.x) }
+  }
+
+  /**
+   * Avança o voo. @returns quem o míssil atravessou neste passo (uma vez cada)
+   * @param {{ id: string, x: number, z: number, immune: boolean }[]} targets
+   */
+  update(dt, targets = []) {
+    const before = this.traveled
+    this.time += dt
+    if (before >= this.length) return []
+    const after = this.traveled
+    const hits = []
+    for (const t of targets) {
+      if (this.hit.has(t.id)) continue
+      const { along, side } = this.local(t.x, t.z)
+      const r = this.spec.hitRadius
+      if (side > r || along < before - r || along > after + r) continue
+      this.hit.add(t.id)
+      hits.push({ id: t.id, damage: t.immune ? 0 : this.spec.damage, push: this.spec.push, dx: this.dir.x, dz: this.dir.z })
+    }
+    return hits
+  }
+
+  /** `x, z` está em cima do rastro (o trecho que o míssil já percorreu)? */
+  trailContains(x, z) {
+    if (this.expired) return false
+    const { along, side } = this.local(x, z)
+    return along >= -TARGET_RADIUS && along <= this.traveled + TARGET_RADIUS && side <= this.spec.trailWidth / 2 + TARGET_RADIUS
   }
 }

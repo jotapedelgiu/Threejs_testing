@@ -72,9 +72,12 @@ export class RemotePlayers {
     player.boosting = state.boosting
     const ultStarted = state.ult && !player.ult // acabou de ativar o ultimate
     player.ult = state.ult
+    // Mísseis novos (o primeiro estado só marca a contagem: não relança os antigos)
+    const missilesFired = player.ms === undefined ? 0 : Math.max(0, state.ms - player.ms)
+    player.ms = state.ms
     const liveryChanged = state.livery !== player.livery
     player.livery = state.livery
-    return { player, liveryChanged, knockedOut, ultStarted }
+    return { player, liveryChanged, knockedOut, ultStarted, missilesFired }
   }
 
   remove(peerId) {
