@@ -37,13 +37,13 @@ export class Background {
 // A área de sombra cobre só o que a câmera mostra: anda junto com o alvo e
 // cresce com o zoom (follow).
 export class Sun {
-  params = { azimuth: 215, elevation: 50 }
+  params = { azimuth: 286, elevation: 50 }
   distance = 70
 
   constructor(scene) {
     this.light = new THREE.DirectionalLight(0xfff4dc, 1.0)
     this.light.castShadow = true
-    this.light.shadow.mapSize.set(2048, 2048)
+    this.setShadowResolution(1024)
     this.light.shadow.bias = -0.0005
     this.light.shadow.normalBias = 0.02
     const sc = this.light.shadow.camera
@@ -52,6 +52,16 @@ export class Sun {
     scene.add(this.light, this.light.target)
     this.shadowHalfSize = 0
     this.follow(new THREE.Vector3(), 12)
+  }
+
+  /** Resolução do mapa de sombra (512, 1024, 2048...). Maior = mais nítida e mais cara. */
+  setShadowResolution(size) {
+    const shadow = this.light.shadow
+    if (shadow.mapSize.x === size) return
+    shadow.mapSize.set(size, size)
+    // O mapa atual tem o tamanho antigo: descarta para o renderer criar outro
+    shadow.map?.dispose()
+    shadow.map = null
   }
 
   /** Recalcula a posição a partir de azimute/elevação (chamar ao mudar params). */
@@ -76,18 +86,21 @@ export class Sun {
 }
 
 // --- Arena --------------------------------------------------------------------
-// Piso quadrado com uma mureta de borracha em volta. A grade (textura) dá
-// referência de movimento; a cor vem do painel e multiplica a textura.
+// Piso retangular (width em X, depth em Z) com uma mureta de borracha em
+// volta. A grade (textura) dá referência de movimento; a cor vem do painel e
+// multiplica a textura.
 const WALL_HEIGHT = 1
 const WALL_THICKNESS = 1
 const GRID_TEXTURE_SIZE = 256
 
 export class Arena {
-  params = { color: '#d8c9a3', grid: 0.12, tileSize: 2, wallColor: '#e8463c' }
+  params = { color: '#004852', grid: 0.12, tileSize: 2, wallColor: '#e8463c' }
 
-  constructor(scene, renderer, size) {
-    this.size = size
-    this.half = size / 2
+  constructor(scene, renderer, width, depth) {
+    this.width = width
+    this.depth = depth
+    this.halfX = width / 2
+    this.halfZ = depth / 2
 
     this.gridCanvas = document.createElement('canvas')
     this.gridCanvas.width = this.gridCanvas.height = GRID_TEXTURE_SIZE
@@ -97,20 +110,22 @@ export class Arena {
     this.gridTexture.anisotropy = renderer.capabilities.getMaxAnisotropy()
     this.updateGrid()
 
-    this.ground = toonMesh(new THREE.PlaneGeometry(size, size), { map: this.gridTexture, rim: 0 })
+    this.ground = toonMesh(new THREE.PlaneGeometry(width, depth), { map: this.gridTexture, rim: 0 })
     this.ground.rotation.x = -Math.PI / 2
     this.ground.receiveShadow = true
     scene.add(this.ground)
 
     // Mureta: quatro blocos por fora do piso, com material compartilhado
     this.wallMaterial = createToonMaterial({ color: this.params.wallColor, glossiness: 6 })
-    const length = size + WALL_THICKNESS * 2
-    const offset = this.half + WALL_THICKNESS / 2
-    const geometry = new THREE.BoxGeometry(length, WALL_HEIGHT, WALL_THICKNESS)
-    this.walls = [[0, offset, false], [0, -offset, false], [offset, 0, true], [-offset, 0, true]].map(([x, z, rotated]) => {
+    // Paredes ao longo de X (fundo/frente) e ao longo de Z (laterais); as de
+    // X cobrem os cantos
+    const alongX = new THREE.BoxGeometry(width + WALL_THICKNESS * 2, WALL_HEIGHT, WALL_THICKNESS)
+    const alongZ = new THREE.BoxGeometry(WALL_THICKNESS, WALL_HEIGHT, depth)
+    const offX = this.halfX + WALL_THICKNESS / 2
+    const offZ = this.halfZ + WALL_THICKNESS / 2
+    this.walls = [[alongX, 0, offZ], [alongX, 0, -offZ], [alongZ, offX, 0], [alongZ, -offX, 0]].map(([geometry, x, z]) => {
       const wall = new THREE.Mesh(geometry, this.wallMaterial)
       wall.position.set(x, WALL_HEIGHT / 2, z)
-      if (rotated) wall.rotation.y = Math.PI / 2
       wall.castShadow = wall.receiveShadow = true
       scene.add(wall)
       return wall
@@ -133,7 +148,7 @@ export class Arena {
     ctx.fillStyle = `rgb(${v},${v},${v})`
     ctx.fillRect(0, 0, s, 6)
     ctx.fillRect(0, 0, 6, s)
-    this.gridTexture.repeat.setScalar(this.size / this.params.tileSize)
+    this.gridTexture.repeat.set(this.width / this.params.tileSize, this.depth / this.params.tileSize)
     this.gridTexture.updateMatrix()
     this.gridTexture.needsUpdate = true
   }

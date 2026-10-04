@@ -47,3 +47,37 @@ const NO_GLOW = new THREE.Color(0x000000)
 export function setBoostGlow(materials, on) {
   for (const m of materials) m.uniforms.uEmissive.value.copy(on ? BOOST_GLOW : NO_GLOW)
 }
+
+// --- Materiais do modelo --------------------------------------------------------
+// Os materiais do glTF são agrupados em poucos materiais toon; cada grupo vira
+// uma cor no painel. O agrupamento é pelo NOME do material no Blender (os IDs
+// mudam a cada exportação), ignorando o sufixo que o Blender põe em cópias
+// ("Body 1.001" conta como "Body 1"). Nomes genéricos ("Material.002") são
+// listados exatos. Material que não estiver em nenhum grupo cai em
+// DEFAULT_GROUP. Os dois primeiros grupos são a carroceria, pintada pela
+// livery de cada jogador.
+export const MATERIAL_GROUPS = [
+  { name: 'Carroceria (principal)', color: '#3a3dce', glossiness: 8, materials: ['Body 1'] },
+  {
+    name: 'Carroceria (secundária)', color: '#a066e8', glossiness: 8,
+    materials: ['Special Metallic Car Paint', 'Material.005', 'Material.002'], // .005/.002: retrovisor
+  },
+  {
+    name: 'Metal e detalhes', color: '#0000ff', glossiness: 10,
+    materials: ['Car chrome', 'Brushed Aluminum 2', 'glass', 'Iron Touched', 'iron.001', 'Red light'],
+  },
+  {
+    name: 'Borracha e assento', color: '#2a2a30', glossiness: 0,
+    materials: ['rubber base', 'Elastic Rubber', 'Material.001', 'HL Bulb Glow', 'HL Bulb Glow.001', 'Procedural Leather'],
+  },
+]
+export const DEFAULT_GROUP = 2 // metal e detalhes
+const withoutCopySuffix = (name) => name.replace(/\.\d{3}$/, '')
+
+/** Índice do grupo de um material pelo nome (exato primeiro, depois sem sufixo). */
+export function materialGroup(name) {
+  const exact = MATERIAL_GROUPS.findIndex((g) => g.materials.includes(name))
+  if (exact !== -1) return exact
+  const base = withoutCopySuffix(name)
+  return MATERIAL_GROUPS.findIndex((g) => g.materials.some((m) => withoutCopySuffix(m) === base && !/^Material$/.test(base)))
+}

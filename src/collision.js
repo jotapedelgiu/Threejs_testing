@@ -113,13 +113,13 @@ const wallHits = [{ normal: null, depth: 0 }, { normal: null, depth: 0 }]
 const wallResult = []
 
 /**
- * Testa o carrinho contra as paredes de uma arena quadrada centrada na
- * origem (de -half a +half em X e Z). Roda todo passo, então não aloca: o
- * array devolvido é reaproveitado e só vale até a próxima chamada.
+ * Testa o carrinho contra as paredes de uma arena retangular centrada na
+ * origem (de -halfX a +halfX e de -halfZ a +halfZ). Roda todo passo, então não
+ * aloca: o array devolvido é reaproveitado e só vale até a próxima chamada.
  * @returns {{ normal: THREE.Vector3, depth: number }[]} uma entrada por parede
  *   tocada; a normal aponta para dentro da arena
  */
-export function testArenaWalls(position, yaw, fp, half) {
+export function testArenaWalls(position, yaw, fp, halfX, halfZ = halfX) {
   capsuleSegment(position, yaw, fp, tmpA0, tmpA1)
   wallResult.length = 0
   const add = (normal, depth) => {
@@ -134,9 +134,59 @@ export function testArenaWalls(position, yaw, fp, half) {
   const minX = Math.min(tmpA0.x, tmpA1.x) - fp.radius
   const maxZ = Math.max(tmpA0.y, tmpA1.y) + fp.radius
   const minZ = Math.min(tmpA0.y, tmpA1.y) - fp.radius
-  if (maxX > half) add(WALL_NORMALS.maxX, maxX - half)
-  else if (minX < -half) add(WALL_NORMALS.minX, -half - minX)
-  if (maxZ > half) add(WALL_NORMALS.maxZ, maxZ - half)
-  else if (minZ < -half) add(WALL_NORMALS.minZ, -half - minZ)
+  if (maxX > halfX) add(WALL_NORMALS.maxX, maxX - halfX)
+  else if (minX < -halfX) add(WALL_NORMALS.minX, -halfX - minX)
+  if (maxZ > halfZ) add(WALL_NORMALS.maxZ, maxZ - halfZ)
+  else if (minZ < -halfZ) add(WALL_NORMALS.minZ, -halfZ - minZ)
   return wallResult
+}
+
+/**
+ * Testa o carrinho contra um poste redondo (cilindro em pé) no ponto (cx, cz).
+ * @returns {{ normal: THREE.Vector3, depth: number } | null} normal do poste para o carro
+ */
+export function testCarCircle(position, yaw, fp, cx, cz, radius) {
+  capsuleSegment(position, yaw, fp, tmpA0, tmpA1)
+  // Ponto do segmento da cápsula mais perto do centro do poste
+  const sx = tmpA1.x - tmpA0.x, sz = tmpA1.y - tmpA0.y
+  const lenSq = sx * sx + sz * sz
+  const t = lenSq > 1e-9 ? THREE.MathUtils.clamp(((cx - tmpA0.x) * sx + (cz - tmpA0.y) * sz) / lenSq, 0, 1) : 0
+  const px = tmpA0.x + sx * t, pz = tmpA0.y + sz * t
+  const dx = px - cx, dz = pz - cz
+  const dist = Math.hypot(dx, dz)
+  const depth = fp.radius + radius - dist
+  if (depth <= 0) return null
+  const normal = dist > 1e-6 ? new THREE.Vector3(dx / dist, 0, dz / dist) : new THREE.Vector3(1, 0, 0)
+  return { normal, depth }
+}
+
+/**
+ * Distância de um ponto (px, pz) até o segmento a–b no chão.
+ * @param {[number, number]} a
+ * @param {[number, number]} b
+ */
+export function distanceToSegment(px, pz, a, b) {
+  const sx = b[0] - a[0], sz = b[1] - a[1]
+  const lenSq = sx * sx + sz * sz
+  const t = lenSq > 1e-9 ? THREE.MathUtils.clamp(((px - a[0]) * sx + (pz - a[1]) * sz) / lenSq, 0, 1) : 0
+  return Math.hypot(px - (a[0] + sx * t), pz - (a[1] + sz * t))
+}
+
+/**
+ * Testa o carrinho contra uma cápsula parada (segmento a–b com raio), ex.:
+ * uma parede de pneus.
+ * @param {THREE.Vector2} a ponta do segmento (x, z)
+ * @param {THREE.Vector2} b
+ * @returns {{ normal: THREE.Vector3, depth: number } | null} normal da cápsula para o carro
+ */
+export function testCarCapsule(position, yaw, fp, a, b, radius) {
+  capsuleSegment(position, yaw, fp, tmpA0, tmpA1)
+  closestPointsSegments(tmpA0, tmpA1, a, b, closestA, closestB)
+  const dx = closestA.x - closestB.x
+  const dz = closestA.y - closestB.y
+  const dist = Math.hypot(dx, dz)
+  const depth = fp.radius + radius - dist
+  if (depth <= 0) return null
+  const normal = dist > 1e-6 ? new THREE.Vector3(dx / dist, 0, dz / dist) : new THREE.Vector3(1, 0, 0)
+  return { normal, depth }
 }

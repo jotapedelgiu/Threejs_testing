@@ -12,17 +12,17 @@
         "volta do volante (s)": 0.25,
         "inércia do giro (s)": 0.15,
         "inclinação": 1,
-        "elasticidade da batida": 1.15,
+        "elasticidade da batida": 0.95,
         "elasticidade da parede": 0.6,
-        "freio do empurrão": 3.7,
+        "freio do empurrão": 2.2,
         "quique": 1.2
       },
       "folders": {}
     },
     "Materiais do carrinho": {
       "controllers": {
-        "Carroceria (principal)": "#ff6b00",
-        "Carroceria (secundária)": "#ffc300",
+        "Carroceria (principal)": "#3a3dce",
+        "Carroceria (secundária)": "#a066e8",
         "Metal e detalhes": "#0000ff",
         "Borracha e assento": "#2a2a30"
       },
@@ -31,8 +31,8 @@
     "Dano (força em m/s)": {
       "controllers": {
         "mínimo para dar dano": 2.5,
-        "FORTE (2 de dano) a partir de": 5.5,
-        "PANCADA (3 de dano) a partir de": 7.5
+        "FORTE a partir de": 6,
+        "PANCADA a partir de": 8.5
       },
       "folders": {}
     },
@@ -58,12 +58,20 @@
       },
       "folders": {}
     },
+    "Bastões": {
+      "controllers": {
+        "cor da madeira": "#e8463c",
+        "cor dos espinhos": "#ffffff"
+      },
+      "folders": {}
+    },
     "Faíscas": {
       "controllers": {
         "ativar": true,
         "quantidade": 1,
         "arcos elétricos": 1,
-        "espessura (px)": 1.5
+        "espessura (px)": 1.5,
+        "cor": "#ffd21f"
       },
       "folders": {}
     },

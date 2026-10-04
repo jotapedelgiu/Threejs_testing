@@ -10,6 +10,11 @@ import { damageParams } from './damage.js'
 // "Salvar" grava tudo em public/settings.json (só no `npm run dev`, via plugin
 // do vite.config.js); o jogo carrega esse arquivo ao abrir. "Restaurar" volta
 // aos valores escritos no código.
+//
+// Fica escondido durante o jogo: abre/fecha com F2, ou já aberto com ?painel
+// na URL. Escondido ou não, os valores salvos são aplicados do mesmo jeito.
+
+const TOGGLE_KEY = 'F2'
 
 // Liga um controle de cor a um uniform (THREE.Color)
 const colorProxy = (uniform) => ({
@@ -25,11 +30,21 @@ export class ControlPanel {
    *   arena: import('./environment.js').Arena,
    *   camera: import('./groupCamera.js').GroupCamera,
    *   sparks: import('./sparks.js').SparkEffects,
+   *   batPaint: { params: { base: string, spikes: string }, apply: () => void },
+   *   tirePaint: { params: { color: string }, apply: () => void },
+   *   quality: { maxPixelRatio: number, shadowSize: number, showFps: boolean },
+   *   onQualityChange: () => void,
    *   onRerollLivery: () => void,
    * }} deps
    */
-  constructor({ background, sun, arena, camera, sparks, onRerollLivery }) {
+  constructor({ background, sun, arena, camera, sparks, batPaint, tirePaint, quality, onQualityChange, onRerollLivery }) {
     const gui = (this.gui = new GUI({ title: 'Controles' }))
+    if (!new URLSearchParams(location.search).has('painel')) gui.hide()
+    window.addEventListener('keydown', (e) => {
+      if (e.code !== TOGGLE_KEY || e.repeat) return
+      e.preventDefault()
+      this.toggle()
+    })
 
     this.saveButton = gui.add({ save: () => this.save() }, 'save').name('Salvar configurações')
     gui.add({ reset: () => gui.reset() }, 'reset').name('Restaurar padrões do código')
@@ -44,8 +59,8 @@ export class ControlPanel {
 
     const damage = gui.addFolder('Dano (força em m/s)')
     damage.add(damageParams, 'minImpact', 0, 9, 0.1).name('mínimo para dar dano')
-    damage.add(damageParams, 'strong', 0, 12, 0.1).name('FORTE (2 de dano) a partir de')
-    damage.add(damageParams, 'smash', 0, 12, 0.1).name('PANCADA (3 de dano) a partir de')
+    damage.add(damageParams, 'strong', 0, 12, 0.1).name('FORTE a partir de')
+    damage.add(damageParams, 'smash', 0, 12, 0.1).name('PANCADA a partir de')
 
     const cam = gui.addFolder('Câmera')
     const axes = () => camera.updateAxes()
@@ -66,6 +81,18 @@ export class ControlPanel {
     ground.add(arena.params, 'grid', 0, 0.6, 0.01).name('grade').onChange(grid)
     ground.add(arena.params, 'tileSize', 0.5, 10, 0.5).name('tamanho do quadrado').onChange(grid)
     ground.addColor(arena.params, 'wallColor').name('cor da mureta').onChange(colors)
+
+    const perf = gui.addFolder('Desempenho')
+    perf.add(quality, 'maxPixelRatio', 0.5, 2, 0.25).name('resolução máx. (pixel ratio)').onChange(onQualityChange)
+    perf.add(quality, 'shadowSize', { baixa: 512, média: 1024, alta: 2048 }).name('qualidade da sombra').onChange(onQualityChange)
+    perf.add(quality, 'showFps').name('mostrar FPS').onChange(onQualityChange)
+
+    const batFolder = gui.addFolder('Bastões')
+    batFolder.addColor(batPaint.params, 'base').name('cor da madeira').onChange(batPaint.apply)
+    batFolder.addColor(batPaint.params, 'spikes').name('cor dos espinhos').onChange(batPaint.apply)
+
+    const tireFolder = gui.addFolder('Pneus')
+    tireFolder.addColor(tirePaint.params, 'color').name('cor').onChange(tirePaint.apply)
 
     const sparkFolder = gui.addFolder('Faíscas')
     sparkFolder.add(sparks.params, 'enabled').name('ativar')
@@ -118,6 +145,7 @@ export class ControlPanel {
 
     // Pastas de visual começam fechadas para o painel não tomar a tela
     for (const f of [bg, shading, rim, halftone, outline, sunFolder]) f.close()
+    this.preventFormRestore()
   }
 
   /**
@@ -147,6 +175,7 @@ export class ControlPanel {
       this.materialsFolder.addColor(colorProxy(material.uniforms.uColor), 'value').name(name)
     }
     this.materialsFolder.show()
+    this.preventFormRestore()
   }
 
   /** Atualiza o painel depois de mudar cores por código (ex.: nova pintura). */
@@ -155,8 +184,31 @@ export class ControlPanel {
     this.liveryButton.name(`Sortear pintura (atual: ${name})`)
   }
 
+  /** Mostra/esconde o painel (F2). */
+  toggle() {
+    this.gui.show(this.gui._hidden)
+  }
+
   load(settings) {
     this.gui.load(settings)
+    this.preventFormRestore()
+  }
+
+  /**
+   * Padrões do jogo: valores do código + o settings.json (o que todo jogador
+   * recebe). Chamado antes de cada partida, para nenhum ajuste feito à mão
+   * no painel (F2) vazar para a partida seguinte.
+   */
+  restoreGameDefaults(settings) {
+    this.gui.reset()
+    if (settings) this.gui.load(settings)
+    this.preventFormRestore()
+  }
+
+  // O navegador pode "lembrar" caixinhas e campos de formulário ao reabrir
+  // ou duplicar a aba; o painel não deve herdar nada disso
+  preventFormRestore() {
+    for (const input of this.gui.domElement.querySelectorAll('input')) input.autocomplete = 'off'
   }
 
   async save() {

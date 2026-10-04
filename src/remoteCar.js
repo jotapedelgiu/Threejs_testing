@@ -52,6 +52,12 @@ export class RemoteCar {
   setState(state, localNow) {
     const snaps = this.snapshots
     if (snaps.length && state.t <= snaps[snaps.length - 1].t) return // atrasado/repetido
+    // Teletransporte (volta do nocaute, R): descarta o histórico, senão a
+    // interpolação mostraria o carro deslizando pelo mapa até o lugar novo
+    if (state.tp !== this.teleports) {
+      this.teleports = state.tp
+      snaps.length = 0
+    }
     snaps.push(state)
     while (snaps.length > 2 && snaps[0].t < state.t - BUFFER_SECONDS) snaps.shift()
 

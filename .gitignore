@@ -5,3 +5,11 @@ dist
 
 # Configurações locais do Visual Studio
 .vs/
+
+# Planilhas (ex.: balanceamento) e arquivos temporários do Excel
+*.xlsx
+~$*
+
+# Arquivos-fonte do Blender (e os backups automáticos .blend1, .blend2...)
+*.blend
+*.blend[0-9]*

@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { RemoteCar } from './remoteCar.js'
 import { createToonMaterial } from './toon.js'
 import { readColors, writeColors, setBoostGlow } from './paint.js'
+import { Presence } from './presence.js'
 
 // Jogadores remotos: um RemoteCar por peer, com pintura própria, placar e
 // estado de boost. Cria o carro no primeiro estado recebido e remove quando o
@@ -46,7 +47,11 @@ export class RemotePlayers {
       const i = this.paintedMaterials.indexOf(o.material)
       if (i !== -1) o.material = bodyMaterials[i]
     })
-    const player = { car: new RemoteCar(model), bodyMaterials, livery: null, hp: 0, ko: false, shield: false, boosting: false }
+    const player = {
+      car: new RemoteCar(model), bodyMaterials, livery: null,
+      hp: 0, ko: false, shield: false, boosting: false,
+      presence: new Presence(), // some no nocaute, reaparece com "pop"
+    }
     this.scene.add(player.car.root)
     this.players.set(peerId, player)
     return player
@@ -87,6 +92,11 @@ export class RemotePlayers {
     for (const { car } of this.players.values()) {
       if (car.hasState) car.sample(localNow)
     }
+  }
+
+  /** Some/aparece (nocaute) de cada carro remoto. */
+  updatePresence(dt) {
+    for (const p of this.players.values()) p.presence.apply(p.car.root, p.presence.update(dt, !p.ko))
   }
 
   liveries() {

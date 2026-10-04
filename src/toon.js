@@ -11,18 +11,18 @@ export const toonGlobals = {
   uGroundColor: { value: new THREE.Color(0x7a8a4a) },
   uAmbient: { value: 0.25 },
   uRimColor: { value: new THREE.Color(0xffffff) },
-  uRimStrength: { value: 0.4 },
-  uRimThreshold: { value: 0.78 }, // quanto maior, mais fino o rim
+  uRimStrength: { value: 0.9 },
+  uRimThreshold: { value: 0.64 }, // quanto maior, mais fino o rim
   uSpecColor: { value: new THREE.Color(0xffffff) },
 
   // Retícula estilo quadrinhos (pontos em espaço de tela nas sombras)
-  uHalftone: { value: true },
-  uDotColor: { value: new THREE.Color(0x15121c) },
-  uDotSpacing: { value: 7.0 },      // distância entre pontos, em pixels CSS
-  uDotSize: { value: 1.0 },         // diâmetro máximo em relação ao espaçamento (>0.71 os pontos se fundem)
-  uDotAngle: { value: Math.PI / 4 },
-  uDotDeep: { value: 0.35 },        // quão fundo na sombra os pontos chegam ao tamanho máximo
-  uDotTint: { value: 0.2 },         // 0 = sombra só com pontos, 1 = mantém o tom azulado
+  uHalftone: { value: false },
+  uDotColor: { value: new THREE.Color(0x000000) },
+  uDotSpacing: { value: 3.0 },      // distância entre pontos, em pixels CSS
+  uDotSize: { value: 0.9 },         // diâmetro máximo em relação ao espaçamento (>0.71 os pontos se fundem)
+  uDotAngle: { value: THREE.MathUtils.degToRad(47) },
+  uDotDeep: { value: 0 },           // quão fundo na sombra os pontos chegam ao tamanho máximo
+  uDotTint: { value: 0 },           // 0 = sombra só com pontos, 1 = mantém o tom azulado
   uPixelRatio: { value: 1 },
 }
 

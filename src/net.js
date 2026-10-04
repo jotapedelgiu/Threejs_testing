@@ -28,21 +28,29 @@ function listen(action, validate, handler) {
  *   onHit: (hit: { target: string, ix: number, iz: number, damage: number, boosted: boolean }, attackerId: string) => void,
  *   onWall: (wall: { damage: number }, peerId: string) => void,
  *   onPickup: (pickup: { slot: number, gen: number }, peerId: string) => void,
- *   onOrbs: (snapshot: object[], peerId: string) => void,
+ *   onLayout: (layout: { seed: string, since: number, orbs: object[] }, peerId: string) => void,
+ *   onBat: (bat: { index: number, dx: number, dz: number, strength: number, damage: number }, peerId: string) => void,
+ *   onHello: (hello: { name: string, since: number, phase: 'lobby' | 'playing' }, peerId: string) => void,
+ *   onStart: (start: { seed: string, since: number }, peerId: string) => void,
  * }} handlers
  */
 export function joinArena(roomId, handlers) {
   const room = joinRoom({ appId: APP_ID }, roomId)
   const stateAction = room.makeAction('state')
-  // Batida anunciada por quem bateu: empurrão (ix, iz) que `target` deve
-  // receber e os pontos ganhos
+  // Batida anunciada por quem bateu: empurrão (ix, iz) e dano que `target`
+  // deve receber
   const hitAction = room.makeAction('hit')
   // Quem manda bateu na parede depois de levar um boost (para mostrar o dano)
   const wallAction = room.makeAction('wall')
   // Alguém pegou uma esfera de boost
   const pickupAction = room.makeAction('pickup')
-  // Estado das esferas, mandado para quem acabou de entrar
-  const orbsAction = room.makeAction('orbs')
+  // Mapa da partida (semente) + estado das esferas, para quem acabou de entrar
+  const layoutAction = room.makeAction('layout')
+  // Alguém bateu num bastão com espinhos
+  const batAction = room.makeAction('bat')
+  // Sala de espera: nome/situação de cada um, e o anfitrião começando a partida
+  const helloAction = room.makeAction('hello')
+  const startAction = room.makeAction('start')
   const peers = new Set()
 
   room.onPeerJoin = (peerId) => {
@@ -59,7 +67,10 @@ export function joinArena(roomId, handlers) {
   listen(hitAction, validators.hit, handlers.onHit)
   listen(wallAction, validators.wall, handlers.onWall)
   listen(pickupAction, validators.pickup, handlers.onPickup)
-  listen(orbsAction, validators.orbs, handlers.onOrbs)
+  listen(layoutAction, validators.layout, handlers.onLayout)
+  listen(batAction, validators.bat, handlers.onBat)
+  listen(helloAction, validators.hello, handlers.onHello)
+  listen(startAction, validators.start, handlers.onStart)
 
   // Sai da sala ao fechar a aba, para os outros removerem o carrinho na hora
   window.addEventListener('beforeunload', () => room.leave())
@@ -77,7 +88,13 @@ export function joinArena(roomId, handlers) {
     sendWall: broadcast(wallAction),
     /** Anuncia que eu peguei a esfera { slot, gen }. */
     sendPickup: broadcast(pickupAction),
-    /** Manda o estado das esferas só para `peerId`. */
-    sendOrbs: (snapshot, peerId) => orbsAction.send(snapshot, { target: peerId }),
+    /** Anuncia que eu bati num bastão. */
+    sendBat: broadcast(batAction),
+    /** Manda o mapa da partida e o estado das esferas só para `peerId`. */
+    sendLayout: (layout, peerId) => layoutAction.send(layout, { target: peerId }),
+    /** Quem sou eu (nome, situação): para todos, ou só para `peerId`. */
+    sendHello: (hello, peerId) => (peerId ? helloAction.send(hello, { target: peerId }) : broadcast(helloAction)(hello)),
+    /** Anfitrião: começa a partida para todos com o mapa `start`. */
+    sendStart: broadcast(startAction),
   }
 }

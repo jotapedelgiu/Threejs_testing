@@ -16,8 +16,9 @@ html, body {
 
 .label {
   position: fixed;
-  left: 24px;
-  bottom: 24px;
+  right: 24px;
+  top: 24px;
+  text-align: right;
   color: #fff;
   text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
   pointer-events: none;
@@ -155,6 +156,11 @@ html, body {
   color: #3fd0ff;
 }
 
+.hit-popup.spike {
+  font-size: 40px;
+  color: #c77dff;
+}
+
 .hit-popup.wall {
   font-size: 40px;
   color: #ff7a1a;
@@ -170,7 +176,168 @@ html, body {
   color: #9ff6ff;
 }
 
-/* --- HUD do jogador: vida + boosts ------------------------------------------ */
+/* --- Vida do jogador (canto inferior esquerdo) ------------------------------ */
+.health-hud {
+  position: fixed;
+  left: 28px;
+  bottom: 20px;
+  width: min(380px, calc(100vw - 56px));
+  color: #fff;
+  pointer-events: none;
+}
+
+.health-hud .hp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-weight: 900;
+  font-style: italic;
+  text-shadow: 2px 2px 0 #000;
+}
+
+.health-hud .hp-label {
+  font-size: 16px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.health-hud .hp-num {
+  display: inline-block;
+  font-size: 34px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  -webkit-text-stroke: 1.5px #000;
+}
+
+.health-hud .hp-max {
+  font-size: 15px;
+  opacity: 0.7;
+}
+
+/* Moldura inclinada, estilo quadrinhos */
+.health-hud .hp-frame {
+  position: relative;
+  height: 30px;
+  border: 4px solid #000;
+  border-radius: 8px;
+  background: rgba(10, 12, 18, 0.7);
+  box-shadow: 4px 4px 0 #000;
+  transform: skewX(-12deg);
+}
+
+.health-hud .hp-fill,
+.health-hud .hp-lag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+  border-radius: 3px;
+}
+
+.health-hud .hp-fill {
+  /* Brilho em cima, sombra embaixo: volume de desenho animado */
+  box-shadow: inset 0 5px 0 rgba(255, 255, 255, 0.35), inset 0 -6px 0 rgba(0, 0, 0, 0.25);
+  transition: width 0.12s ease-out, background 0.3s;
+}
+
+/* Recuperando vida: enche devagar */
+.health-hud.healing .hp-fill {
+  transition: width 0.7s ease-out, background 0.3s;
+}
+
+/* Rastro do dano: espera um instante e escorre */
+.health-hud .hp-lag {
+  background: #fff4c2;
+  transition: width 0.6s cubic-bezier(0.5, 0, 0.75, 0) 0.45s;
+}
+
+/* Divisões a cada 10 de vida */
+.health-hud .hp-ticks {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 2px), rgba(0, 0, 0, 0.35) calc(10% - 2px) 10%);
+}
+
+.health-hud .hp-status {
+  min-height: 18px;
+  margin-top: 6px;
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  color: #ff3d3d;
+  text-shadow: 2px 2px 0 #000;
+}
+
+/* Tomou dano: treme e pisca */
+.health-hud.hit .hp-frame {
+  animation: hp-shake 0.35s ease-out, hp-flash 0.35s ease-out;
+}
+
+.health-hud.hit .hp-num {
+  animation: hp-num-pop 0.35s ease-out;
+}
+
+/* Pouca vida: o número pulsa em vermelho */
+.health-hud.low .hp-num {
+  color: #ff3d3d;
+  animation: hp-low 0.6s ease-in-out infinite alternate;
+}
+
+.health-hud.ko .hp-frame {
+  opacity: 0.5;
+}
+
+/* Recém-voltou do nocaute: barra piscando enquanto está protegido */
+.health-hud.shielded .hp-frame {
+  animation: shield-blink 0.25s steps(2) infinite;
+}
+
+/* "-N" que salta da ponta da barra */
+.health-hud .hp-damage {
+  position: absolute;
+  top: -10px;
+  transform: skewX(12deg);
+  font-size: 26px;
+  font-weight: 900;
+  font-style: italic;
+  color: #ff3d3d;
+  -webkit-text-stroke: 1.5px #000;
+  text-shadow: 2px 2px 0 #000;
+  animation: hp-damage 0.9s ease-out forwards;
+}
+
+@keyframes hp-shake {
+  0%, 100% { translate: 0 0; }
+  20% { translate: -7px 2px; }
+  40% { translate: 6px -2px; }
+  60% { translate: -4px 1px; }
+  80% { translate: 2px 0; }
+}
+
+@keyframes hp-flash {
+  0% { border-color: #fff; box-shadow: 4px 4px 0 #000, 0 0 20px #ff3d3d; }
+  100% { border-color: #000; box-shadow: 4px 4px 0 #000; }
+}
+
+@keyframes hp-num-pop {
+  0% { scale: 1.4; color: #ff3d3d; }
+  100% { scale: 1; }
+}
+
+@keyframes hp-low {
+  to { scale: 1.12; }
+}
+
+@keyframes hp-damage {
+  0% { opacity: 0; translate: -10px 6px; scale: 0.6; }
+  15% { opacity: 1; translate: 0 -16px; scale: 1.2; }
+  70% { opacity: 1; }
+  100% { opacity: 0; translate: 10px -34px; scale: 1; }
+}
+
+/* --- HUD do jogador: boosts ----------------------------------------------- */
 .player-hud {
   position: fixed;
   left: 50%;
@@ -181,29 +348,6 @@ html, body {
   gap: 8px;
   color: #fff;
   pointer-events: none;
-}
-
-.player-hud .health {
-  display: grid;
-  justify-items: center;
-  gap: 4px;
-}
-
-.player-hud .hp-text {
-  font-size: 13px;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  font-variant-numeric: tabular-nums;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
-}
-
-.player-hud.ko .hp-text {
-  color: #ff3d3d;
-}
-
-/* Recém-voltou do nocaute: barra piscando enquanto está protegido */
-.player-hud.shielded .hp-bar {
-  animation: shield-blink 0.25s steps(2) infinite;
 }
 
 .player-hud .slots {
@@ -244,4 +388,382 @@ html, body {
 
 @keyframes shield-blink {
   50% { opacity: 0.35; }
+}
+
+/* --- Menu: tela inicial e sala de espera ----------------------------------- */
+/* Fora da partida o HUD do jogo some; a arena continua aparecendo atrás */
+body.in-menu .scoreboard,
+body.in-menu .health-hud,
+body.in-menu .player-hud,
+body.in-menu .label {
+  display: none;
+}
+
+.menu {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+  background: radial-gradient(ellipse at center, rgba(5, 6, 10, 0.25), rgba(5, 6, 10, 0.75));
+  z-index: 20;
+}
+
+.menu[hidden],
+.menu-card[hidden],
+.countdown[hidden] {
+  display: none;
+}
+
+.menu-card {
+  width: min(400px, 100%);
+  display: grid;
+  gap: 12px;
+  padding: 28px 26px 24px;
+  background: #11161f;
+  border: 4px solid #000;
+  border-radius: 14px;
+  box-shadow: 8px 8px 0 #000;
+  color: #fff;
+  animation: card-in 0.35s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+.menu .logo {
+  font-size: clamp(40px, 11vw, 58px);
+  font-weight: 900;
+  font-style: italic;
+  line-height: 0.95;
+  text-align: center;
+  text-transform: uppercase;
+  color: #ffd23f;
+  -webkit-text-stroke: 2.5px #000;
+  text-shadow: 5px 5px 0 #000;
+  transform: rotate(-3deg);
+  margin-bottom: 2px;
+}
+
+.menu .tagline {
+  text-align: center;
+  font-size: 14px;
+  opacity: 0.65;
+  margin-bottom: 8px;
+}
+
+.menu .field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.menu input {
+  width: 100%;
+  min-width: 0;
+  padding: 11px 12px;
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+  color: #fff;
+  background: #1c2330;
+  border: 3px solid #000;
+  border-radius: 8px;
+  outline: none;
+}
+
+.menu input:focus {
+  border-color: #ffd23f;
+}
+
+.menu .code-input {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  text-align: center;
+}
+
+.menu button {
+  padding: 12px 16px;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+  background: #2b3445;
+  border: 3px solid #000;
+  border-radius: 8px;
+  box-shadow: 4px 4px 0 #000;
+  cursor: pointer;
+  transition: transform 0.08s, box-shadow 0.08s, background 0.15s;
+}
+
+.menu button:hover:not(:disabled) {
+  background: #36415a;
+}
+
+.menu button:active:not(:disabled) {
+  transform: translate(3px, 3px);
+  box-shadow: 1px 1px 0 #000;
+}
+
+.menu button:focus-visible {
+  outline: 3px solid #fff;
+  outline-offset: 2px;
+}
+
+.menu button.primary {
+  font-size: 19px;
+  padding: 14px 16px;
+  color: #000;
+  background: #ffd23f;
+}
+
+.menu button.primary:hover:not(:disabled) {
+  background: #ffe066;
+}
+
+.menu button.ghost {
+  background: transparent;
+  box-shadow: none;
+  border-color: transparent;
+  font-size: 13px;
+  opacity: 0.7;
+}
+
+.menu button.ghost:hover {
+  background: transparent;
+  opacity: 1;
+}
+
+.menu button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.menu button[hidden] {
+  display: none;
+}
+
+.menu .join-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.menu .or {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.5;
+  margin-top: 4px;
+}
+
+.menu .menu-error {
+  min-height: 18px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #ff6b6b;
+  text-align: center;
+}
+
+.menu .eyebrow {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.menu .room-code {
+  text-align: center;
+  font-size: 54px;
+  font-weight: 900;
+  letter-spacing: 0.18em;
+  padding-left: 0.18em; /* compensa o espaçamento da última letra */
+  color: #9ff6ff;
+  -webkit-text-stroke: 2px #000;
+  text-shadow: 4px 4px 0 #000;
+  line-height: 1;
+  margin-bottom: 4px;
+}
+
+.menu .invite-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.75);
+  padding: 8px 10px;
+}
+
+.menu h3 {
+  margin-top: 8px;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+.menu .roster {
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.menu .roster li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  background: #1c2330;
+  border: 2px solid #000;
+  border-radius: 8px;
+  font-weight: 700;
+  animation: card-in 0.3s ease-out;
+}
+
+.menu .roster .name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu .roster .tag {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border: 2px solid #000;
+  border-radius: 999px;
+  background: #2b3445;
+}
+
+.menu .roster .tag.host {
+  color: #000;
+  background: #ffd23f;
+}
+
+.menu .waiting {
+  text-align: center;
+  font-size: 14px;
+  opacity: 0.7;
+}
+
+.menu .waiting:empty {
+  display: none;
+}
+
+@keyframes card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.97); }
+}
+
+/* --- Contagem 3, 2, 1, JÁ! -------------------------------------------------- */
+.countdown {
+  position: fixed;
+  left: 50%;
+  top: 42%;
+  translate: -50% -50%;
+  font-size: clamp(90px, 22vw, 180px);
+  font-weight: 900;
+  font-style: italic;
+  color: #fff;
+  -webkit-text-stroke: 5px #000;
+  text-shadow: 8px 8px 0 #000;
+  pointer-events: none;
+  z-index: 15;
+  animation: count-pop 1s ease-out forwards;
+}
+
+.countdown.go {
+  color: #ffd23f;
+}
+
+@keyframes count-pop {
+  0% { scale: 2; opacity: 0; }
+  15% { scale: 0.9; opacity: 1; }
+  25% { scale: 1; }
+  80% { opacity: 1; }
+  100% { scale: 0.85; opacity: 0; }
+}
+
+/* --- Etiquetas dos carros: nome em cima, vida embaixo ----------------------- */
+.car-tags {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+
+body.in-menu .car-tags {
+  display: none;
+}
+
+.car-tag-name,
+.car-tag-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  will-change: transform;
+}
+
+.car-tag-name[hidden],
+.car-tag-bar[hidden] {
+  display: none;
+}
+
+.car-tag-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 9px;
+  font-size: 14px;
+  font-weight: 900;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.75);
+  border: 2px solid #000;
+  border-radius: 999px;
+  box-shadow: 2px 2px 0 #000;
+}
+
+.car-tag-bar {
+  width: 58px;
+  height: 10px;
+  background: rgba(10, 12, 18, 0.75);
+  border: 2px solid #000;
+  border-radius: 4px;
+  box-shadow: 2px 2px 0 #000;
+  overflow: hidden;
+}
+
+.car-tag-bar .fill,
+.car-tag-bar .lag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 100%;
+}
+
+.car-tag-bar .fill {
+  transition: width 0.12s ease-out, background 0.3s;
+}
+
+/* Rastro do dano: espera um instante e escorre */
+.car-tag-bar .lag {
+  background: #fff4c2;
+  transition: width 0.5s cubic-bezier(0.5, 0, 0.75, 0) 0.4s;
 }

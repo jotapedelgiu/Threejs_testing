@@ -1,48 +1,38 @@
 import * as THREE from 'three'
 import { createToonMaterial } from './toon.js'
+import { seededRandom } from './random.js'
 
 // Esferas de boost flutuando pela arena.
 //
 // Sem servidor, todos precisam ver as esferas no mesmo lugar. Cada esfera
 // ocupa um "slot" com um número de geração; a posição é sorteada por um
-// gerador determinístico a partir de (sala, slot, geração), então todo mundo
-// calcula o mesmo ponto. Quem pega uma esfera avisa a sala ({ slot, gen }) e
+// gerador determinístico a partir de (semente do mapa, slot, geração), então
+// todo mundo calcula o mesmo ponto. Quem pega uma esfera avisa a sala ({ slot, gen }) e
 // todos avançam aquele slot para a geração seguinte, que reaparece em outro
 // lugar depois de RESPAWN_DELAY.
 
 const PICKUP_RADIUS = 1.9 // m do centro do carrinho
-const RESPAWN_DELAY = 6   // s
+const RESPAWN_DELAY = 9   // s (boost forte: esferas mais raras)
 const FLOAT_HEIGHT = 1.4
-
-// Hash de string (cyrb53) -> semente; mulberry32 -> números em [0, 1)
-function hashString(str) {
-  let h1 = 0xdeadbeef, h2 = 0x41c6ce57
-  for (let i = 0; i < str.length; i++) {
-    const ch = str.charCodeAt(i)
-    h1 = Math.imul(h1 ^ ch, 2654435761)
-    h2 = Math.imul(h2 ^ ch, 1597334677)
-  }
-  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
-  return h1 >>> 0
-}
-function mulberry32(seed) {
-  return () => {
-    seed = (seed + 0x6d2b79f5) | 0
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed)
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-  }
-}
 
 export class Orbs {
   /**
    * @param {THREE.Scene} scene
-   * @param {{ roomId: string, count: number, half: number }} opts
-   *   half = metade do lado da área onde as esferas podem aparecer
+   * @param {{
+   *   seed: string, count: number, halfX: number, halfZ: number,
+   *   anchors?: { x: number, z: number }[], anchorRange?: [number, number],
+   * }} opts
+   *   halfX/halfZ = metade da largura/profundidade da área onde podem aparecer.
+   *   anchors = pontos de interesse (os bastões): cada esfera nasce a uma
+   *   distância de anchorRange (mín., máx.) de um deles, sorteado. Sem
+   *   anchors, aparece em qualquer lugar.
    */
-  constructor(scene, { roomId, count, half }) {
-    this.roomId = roomId
-    this.half = half
+  constructor(scene, { seed, count, halfX, halfZ, anchors = [], anchorRange = [2.5, 5.5] }) {
+    this.seed = seed
+    this.halfX = halfX
+    this.halfZ = halfZ
+    this.anchors = anchors
+    this.anchorRange = anchorRange
     this.time = 0
 
     const geometry = new THREE.IcosahedronGeometry(0.6, 2)
@@ -60,9 +50,36 @@ export class Orbs {
 
   // Posição determinística do slot na geração atual
   place(slot) {
-    const rand = mulberry32(hashString(`${this.roomId}:${slot.index}:${slot.gen}`))
-    slot.mesh.position.set((rand() * 2 - 1) * this.half, FLOAT_HEIGHT, (rand() * 2 - 1) * this.half)
+    const rand = seededRandom(`${this.seed}:${slot.index}:${slot.gen}`)
+    let x, z
+    if (this.anchors.length) {
+      // Perto de um bastão: para pegar o boost é preciso chegar perto dos
+      // espinhos, e quem vai buscar encontra quem também foi. Rodízio (slot +
+      // geração): cada bastão tem esfera por perto e o ponto quente muda de
+      // lugar a cada vez que a esfera reaparece
+      const anchor = this.anchors[(slot.index + slot.gen) % this.anchors.length]
+      const angle = rand() * Math.PI * 2
+      const [min, max] = this.anchorRange
+      const dist = min + rand() * (max - min)
+      x = THREE.MathUtils.clamp(anchor.x + Math.cos(angle) * dist, -this.halfX, this.halfX)
+      z = THREE.MathUtils.clamp(anchor.z + Math.sin(angle) * dist, -this.halfZ, this.halfZ)
+    } else {
+      x = (rand() * 2 - 1) * this.halfX
+      z = (rand() * 2 - 1) * this.halfZ
+    }
+    slot.mesh.position.set(x, FLOAT_HEIGHT, z)
     slot.phase = rand() * Math.PI * 2
+  }
+
+  /** Mapa novo (outra semente e outros bastões): recomeça todas as esferas. */
+  relayout(seed, anchors) {
+    this.seed = seed
+    this.anchors = anchors
+    for (const slot of this.slots) {
+      slot.gen = 0
+      slot.readyAt = 0
+      this.place(slot)
+    }
   }
 
   isActive(slot) {

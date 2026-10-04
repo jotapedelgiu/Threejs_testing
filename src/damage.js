@@ -11,27 +11,56 @@ export const MIN_IMPULSE = 0.3  // m/s; empurrões menores que isso são só enc
 const HIT_COOLDOWN = 0.6        // s entre batidas do mesmo par
 const TIE_MARGIN = 0.75         // m/s; diferença abaixo disso = os dois bateram
 
+// Balanceamento (ver bate-bate_balanceamento.xlsx): com 100 de vida e a
+// mistura típica de batidas, um nocaute leva ~45 s de briga (TTK alvo de
+// arena arcade). Os danos mantêm a proporção 1:2:3 entre leve, FORTE e
+// PANCADA; o TURBO vale 2 PANCADAS e o combo TURBO + PAREDE tira 1/3 da vida.
+export const DAMAGE = {
+  light: 4,
+  strong: 8,
+  smash: 12,
+  turbo: 24, // batida com boost
+  wall: 8,   // bater na parede logo depois de levar um TURBO
+  spike: 6,  // bater num bastão com espinhos
+}
+
+export const SPIKE_MIN_SPEED = 2 // m/s contra o bastão para os espinhos machucarem
+
 // Limites de força (m/s) medidos pela velocidade de QUEM BATEU indo na direção
-// do outro. Referência: a velocidade máxima padrão do carrinho é 9 m/s.
+// do outro. Referência: velocidade máxima ~9-10 m/s. Bem separados no tempo
+// de embalo (~0,8 s, ~1,8 s e ~3,2 s): a PANCADA pede uns 15 m de reta.
 export const damageParams = {
   minImpact: 2.5, // abaixo disso é raspão e não tira vida
-  strong: 5.5,    // a partir daqui: 2 de dano (FORTE)
-  smash: 7.5,     // a partir daqui: 3 de dano (PANCADA; precisa de uns 3 s de embalo)
+  strong: 6,      // a partir daqui: FORTE
+  smash: 8.5,     // a partir daqui: PANCADA
+}
+
+/** Faixa da batida pela força (m/s): 'light' | 'strong' | 'smash' | null (raspão). */
+export function impactTier(impactSpeed) {
+  if (impactSpeed < damageParams.minImpact) return null
+  if (impactSpeed >= damageParams.smash) return 'smash'
+  if (impactSpeed >= damageParams.strong) return 'strong'
+  return 'light'
 }
 
 /** Dano pela força da batida (m/s); 0 = raspão. */
 export function impactDamage(impactSpeed) {
-  if (impactSpeed < damageParams.minImpact) return 0
-  if (impactSpeed >= damageParams.smash) return 3
-  if (impactSpeed >= damageParams.strong) return 2
-  return 1
+  const tier = impactTier(impactSpeed)
+  return tier ? DAMAGE[tier] : 0
+}
+
+/** Faixa de um dano recebido pela rede (para escolher o texto na tela). */
+export function tierOfDamage(damage) {
+  if (damage >= DAMAGE.smash) return 'smash'
+  if (damage >= DAMAGE.strong) return 'strong'
+  return 'light'
 }
 
 // Boost: batida com boost tira mais que a PANCADA e arremessa mais longe; se
 // a vítima bater na parede logo depois, perde mais um pouco
-export const BOOST_HIT_DAMAGE = 5
+export const BOOST_HIT_DAMAGE = DAMAGE.turbo
 export const BOOST_PUSH = 1.5        // multiplica o empurrão na vítima
-export const WALL_DAMAGE = 2
+export const WALL_DAMAGE = DAMAGE.wall
 export const WALL_DAMAGE_WINDOW = 2.5 // s depois da batida com boost
 export const WALL_DAMAGE_MIN_SPEED = 2 // m/s batendo na parede
 
@@ -69,7 +98,7 @@ export class HitCooldown {
 
 // --- Vida ---------------------------------------------------------------------
 export const MAX_HEALTH = 100
-export const KO_TIME = 3         // s fora de combate ao zerar a vida
+export const KO_TIME = 2.5       // s fora de combate ao zerar a vida
 export const RESPAWN_SHIELD = 2  // s sem levar dano depois de voltar
 
 export class Health {

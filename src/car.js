@@ -26,7 +26,7 @@ const approach = (value, target, step) =>
 
 export class Car {
   params = {
-    maxSpeed: 9,      // m/s para frente
+    maxSpeed: 10,     // m/s para frente
     reverseSpeed: 4,  // m/s de ré
     acceleration: 5,  // m/s² na arrancada (diminui perto da velocidade máxima)
     accelCurve: 1.5,  // quanto a aceleração cai perto do máximo (menor = cai mais cedo)
@@ -39,10 +39,10 @@ export class Car {
     turnInertia: 0.15,     // s para a rotação do carro acompanhar o volante
     spinInPlace: 0.6, // fração do giro disponível parado (bate-bate gira no lugar)
     lean: 1,          // intensidade da inclinação visual
-    bounciness: 0.9,  // elasticidade da batida (0 = gruda, 1 = quica tudo)
+    bounciness: 0.95, // elasticidade da batida (0 = gruda, 1 = quica tudo; > 1 cria energia)
     wallBounce: 0.6,  // elasticidade da batida na parede da arena
-    knockDrag: 1.6,   // quão rápido o empurrão da batida acaba (menor = desliza mais)
-    hop: 1,           // intensidade do pulinho e do balanço na batida
+    knockDrag: 2.2,   // quão rápido o empurrão da batida acaba (menor = desliza mais)
+    hop: 1.2,         // intensidade do pulinho e do balanço na batida
     boostSpeed: 1.8,  // velocidade do boost, em múltiplos da velocidade máxima
     boostDuration: 0.8, // s
   }
@@ -54,6 +54,10 @@ export class Car {
   wheel = 0   // -1..1, posição do volante (segue A/D com atraso)
   yawRate = 0 // rad/s, com inércia
   spawn = new THREE.Vector3() // para onde o R (reset) leva o carrinho
+  spawnYaw = 0                // e virado para onde
+  // Conta os teletransportes (reset/volta do nocaute). Vai pela rede: quem vê
+  // o carro sabe que foi um salto e não um movimento, e não interpola
+  teleports = 0
   knock = new THREE.Vector3() // empurrão das batidas (m/s, mundo)
   velocity = new THREE.Vector3() // velocidade total (frente + empurrão)
 
@@ -74,7 +78,7 @@ export class Car {
 
   reset() {
     this.speed = 0
-    this.yaw = 0
+    this.yaw = this.spawnYaw
     this.pedal = 0
     this.wheel = 0
     this.yawRate = 0
@@ -82,7 +86,11 @@ export class Car {
     this.knock.set(0, 0, 0)
     this.velocity.set(0, 0, 0)
     this.root.position.copy(this.spawn)
-    this.root.rotation.set(0, 0, 0)
+    this.root.rotation.set(0, this.spawnYaw, 0)
+    this.teleports++
+    // Sem isso, o quadro seguinte desenharia o carro no meio do caminho entre
+    // a posição antiga e a nova (interpolação do desenho)
+    this.prev = this.capturePose(this.prev)
   }
 
   /** Estado enviado pela rede para os outros jogadores. */
@@ -97,6 +105,7 @@ export class Car {
       roll: this.body.rotation.z,
       pitch: this.body.rotation.x,
       boosting: this.isBoosting,
+      tp: this.teleports,
     }
   }
 

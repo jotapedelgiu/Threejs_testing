@@ -16,8 +16,8 @@ import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js'
 
 export const outlineParams = {
   uOutlineColor: { value: new THREE.Color(0x000000) },
-  uThickness: { value: 2.0 },        // em pixels CSS
-  uDepthThreshold: { value: 0.03 },  // salto de profundidade relativo (3%)
+  uThickness: { value: 1.4 },        // em pixels CSS
+  uDepthThreshold: { value: 0.001 }, // salto de profundidade relativo (0,1%)
   uNormalEdges: { value: false },    // linhas também em dobras (mudança de normal)
   uNormalThreshold: { value: 0.6 },
 }
@@ -121,10 +121,7 @@ export class ScreenOutline {
     // Sombras são atualizadas só no passe de cor, não no de normais
     renderer.shadowMap.autoUpdate = false
 
-    this.colorTarget = new THREE.WebGLRenderTarget(1, 1, {
-      type: THREE.HalfFloatType, // a cor fica linear aqui; 8 bits daria banding
-      samples: 4,                // MSAA no passe de cor
-    })
+    this.colorTarget = this.createColorTarget()
     this.normalTarget = new THREE.WebGLRenderTarget(1, 1, {
       depthTexture: new THREE.DepthTexture(1, 1),
     })
@@ -167,8 +164,28 @@ export class ScreenOutline {
     this.setSize()
   }
 
+  // Cor da cena. MSAA (4 amostras) só sem FXAA: com o FXAA ligado as bordas
+  // já são suavizadas no fim, e MSAA em ponto flutuante é caro em tela grande
+  createColorTarget() {
+    const size = this.size ?? new THREE.Vector2(1, 1)
+    this.colorSamples = outlineOptions.fxaa ? 0 : 4
+    return new THREE.WebGLRenderTarget(size.x, size.y, {
+      type: THREE.HalfFloatType, // a cor fica linear aqui; 8 bits daria banding
+      samples: this.colorSamples,
+    })
+  }
+
+  // Troca o alvo de cor se o FXAA foi ligado/desligado no painel
+  syncColorTarget() {
+    if (this.colorSamples === (outlineOptions.fxaa ? 0 : 4)) return
+    this.colorTarget.dispose()
+    this.colorTarget = this.createColorTarget()
+    this.quad.material.uniforms.tColor.value = this.colorTarget.texture
+  }
+
   setSize() {
     const size = this.renderer.getDrawingBufferSize(new THREE.Vector2())
+    this.size = size
     this.colorTarget.setSize(size.x, size.y)
     this.normalTarget.setSize(size.x, size.y)
     this.edgeTarget.setSize(size.x, size.y)
@@ -180,6 +197,7 @@ export class ScreenOutline {
 
   render() {
     const { renderer, scene, camera } = this
+    this.syncColorTarget()
     const u = this.quad.material.uniforms
     u.cameraNear.value = camera.near
     u.cameraFar.value = camera.far

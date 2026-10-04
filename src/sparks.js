@@ -36,7 +36,7 @@ export class SparkEffects {
     enabled: true,
     intensity: 1,   // multiplica a quantidade de faíscas
     arcs: 1,        // multiplica a frequência dos arcos
-    width: 3,       // espessura das linhas, em pixels CSS
+    width: 1.5,     // espessura das linhas, em pixels CSS
     color: '#ffd21f', // amarelo estático
   }
 
