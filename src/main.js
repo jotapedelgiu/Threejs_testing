@@ -6,14 +6,14 @@ import { ScreenOutline } from './outline.js'
 import { Background, Sun, Arena } from './environment.js'
 import { GroupCamera } from './groupCamera.js'
 import { ControlPanel } from './panel.js'
-import { ScoreUI, PlayerHud, CarTags } from './hud.js'
+import { ScoreUI, PlayerHud, CarTags, UltimateBanner } from './hud.js'
 import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
 import { readDriveInput, isDown, wasPressed } from './input.js'
 import { joinArena } from './net.js'
 import { RemotePlayers } from './remotePlayers.js'
 import { measureFootprint, testCars, testArenaWalls } from './collision.js'
-import { Orbs } from './orbs.js'
+import { Orbs, orbCountFor } from './orbs.js'
 import { SparkEffects, findPoleTip } from './sparks.js'
 import { SpikedBats, extractProp, placeBats } from './bats.js'
 import { TireWalls, placeTireWalls, prepareTireWall } from './tireWalls.js'
@@ -23,9 +23,14 @@ import { newLayout, shouldAdopt } from './layout.js'
 import { Presence } from './presence.js'
 import { MenuUI } from './menu.js'
 import { newRoomCode, normalizeCode, hostOf } from './lobby.js'
-import { pickLivery, readColors, swatch, setBoostGlow, MATERIAL_GROUPS, DEFAULT_GROUP, materialGroup } from './paint.js'
+import { pickLivery, readColors, swatch, setBoostGlow, setUltimateGlow, MATERIAL_GROUPS, DEFAULT_GROUP, materialGroup } from './paint.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, ULT_STORE_TIME } from './ultimate.js'
+import { UltimateView } from './ultimateView.js'
+import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, maxZonesFor } from './medkit.js'
+import { MedkitView } from './medkitView.js'
+import { TrainingDummy, TestPanel, localNet, DUMMY_SPOTS, TEST_SPAWN } from './testRange.js'
 import {
-  judgeHit, impactTier, tierOfDamage, DAMAGE, MIN_IMPULSE, HitCooldown, Health,
+  judgeHit, impactTier, tierOfDamage, DAMAGE, MIN_IMPULSE, HitCooldown, Health, MAX_HEALTH,
   BOOST_PUSH, WALL_DAMAGE, WALL_DAMAGE_WINDOW, WALL_DAMAGE_MIN_SPEED, SPIKE_MIN_SPEED,
 } from './damage.js'
 
@@ -35,8 +40,9 @@ import {
 const MODEL_URL = `${import.meta.env.BASE_URL}models/BumpyCar.glb`
 // Valores do painel salvos pelo botão "Salvar configurações"
 const SETTINGS_URL = `${import.meta.env.BASE_URL}settings.json`
-// Link de convite: ?sala=CÓDIGO abre o menu já com o código da sala
-const INVITE_CODE = normalizeCode(new URLSearchParams(location.search).get('sala'))
+// Link de convite: ?room=CÓDIGO abre o menu já com o código da sala
+// (?sala= é o nome antigo do parâmetro: links velhos continuam valendo)
+const INVITE_CODE = normalizeCode(new URLSearchParams(location.search).get('room') ?? new URLSearchParams(location.search).get('sala'))
 const COUNTDOWN = 3 // s de "3, 2, 1" antes de liberar os carros
 const GO_SHOW_TIME = 0.8 // s que o "JÁ!" fica na tela
 // Arena retangular: lado maior em X (horizontal na tela, combina com a câmera)
@@ -59,7 +65,6 @@ const TIRE_KEEP_CLEAR = 10   // m livres no centro
 const TIRE_FROM_BATS = 8     // m de qualquer bastão (as esferas nascem em volta deles)
 const TIRE_SPACING = 7       // m entre paredes: sempre dá para passar entre elas
 const TIRE_COLOR = '#2b2b30' // borracha
-const ORB_COUNT = 5
 const ORB_NEAR_BAT = [2.5, 5.5] // m do centro do bastão: perto, mas fora dos espinhos
 // Pontos de nascimento (spawns.js): cantos no início, os mais vazios depois
 const SPAWN_INSET_X = 6       // m dos cantos até a mureta
@@ -99,6 +104,9 @@ const groupCamera = new GroupCamera(camera)
 const scoreUI = new ScoreUI()
 const playerHud = new PlayerHud(MAX_BOOSTS)
 const carTags = new CarTags() // nome e vida presos a cada carro
+const ultBanner = new UltimateBanner()
+const ultView = new UltimateView(scene)
+const medViews = Array.from({ length: MEDKIT.maxZones }, () => new MedkitView(scene)) // uma por zona
 // Mapa da partida: posições dos bastões sorteadas por uma semente nova a cada
 // partida; ao conectar com outros, a sala adota o mapa mais antigo (layout.js).
 // As esferas nascem em volta dos bastões.
@@ -121,10 +129,27 @@ const isFree = (x, z) =>
     return distanceToSegment(x, z, [w.x - dx, w.z - dz], [w.x + dx, w.z + dz]) >= 4
   })
 let spawnSpots = spawnPoints(SPAWN_RANGE_X, SPAWN_RANGE_Z, isFree)
+// Lugares para a cápsula de vida: grade fina (~6 m), fora de obstáculos e do
+// centro (lá aparece o ultimate)
+const medkitPoints = () => {
+  const points = []
+  for (let x = -SPAWN_RANGE_X; x <= SPAWN_RANGE_X + 0.01; x += SPAWN_RANGE_X / 7) {
+    for (let z = -SPAWN_RANGE_Z; z <= SPAWN_RANGE_Z + 0.01; z += SPAWN_RANGE_Z / 4) {
+      if (Math.hypot(x, z) > 6 && isFree(x, z)) points.push({ x, z })
+    }
+  }
+  return points
+}
+let medkitSpots = medkitPoints()
 const orbs = new Orbs(scene, {
-  seed: layout.seed, count: ORB_COUNT, halfX: arena.halfX - 3, halfZ: arena.halfZ - 3,
+  seed: layout.seed, count: orbCountFor(1), halfX: arena.halfX - 3, halfZ: arena.halfZ - 3,
   anchors: batSpots, anchorRange: ORB_NEAR_BAT,
 })
+
+// Esferas conforme quantos estão na sala (eu + os outros): todos contam igual
+function updateOrbCount() {
+  orbs.setCount(orbCountFor(1 + roster.size))
+}
 
 // Troca para o mapa de outro jogador (o dele é mais antigo)
 function adoptLayout(next) {
@@ -134,6 +159,7 @@ function adoptLayout(next) {
   tireSpots = placeLayoutTires(layout.seed, batSpots)
   tireWalls?.setWalls(tireSpots)
   spawnSpots = spawnPoints(SPAWN_RANGE_X, SPAWN_RANGE_Z, isFree)
+  medkitSpots = medkitPoints()
   orbs.relayout(layout.seed, batSpots)
 }
 const sparks = new SparkEffects(scene)
@@ -161,6 +187,8 @@ tirePaint.apply = tirePaint.apply.bind(tirePaint)
 let tireWalls = null
 sparks.setSize(window.innerWidth, window.innerHeight, renderer.getPixelRatio())
 outline.skipInNormalPass.push(...sparks.meshes)
+outline.skipInNormalPass.push(...ultView.meshes)
+for (const v of medViews) outline.skipInNormalPass.push(...v.meshes)
 const panel = new ControlPanel({
   background, sun, arena, camera: groupCamera, sparks, batPaint, tirePaint, quality,
   onQualityChange: applyQuality, onRerollLivery: rerollLivery,
@@ -201,11 +229,29 @@ let net = null          // conexão com a sala
 let livery = null       // minha pintura
 const health = new Health() // minha vida (cada jogador é dono da própria)
 let boosts = 0
-let glowing = false     // brilho do boost aplicado nos materiais (dirty flag)
+let glowing = null      // brilho aplicado nos materiais: 'boost', 'ult' ou null (dirty flag)
+// Ultimate (ultimate.js): item do centro (o anfitrião decide), meu inventário
+// e meus raios
+const ultimate = new UltimateDirector()
+const ultSlot = new UltimateSlot()
+const storm = new StormStrikes(ULTIMATES.overcharge)
+let ultClaimed = -1     // ciclo em que já pedi o item (não pede de novo)
+let ultGot = -1         // último item entregue que já vi (anúncio e inventário)
+let ultResend = 0       // anfitrião: reenvia o estado de tempos em tempos
+let stunUntil = 0       // atordoado (sem dirigir) até este instante da simulação
+let ultNews = null      // anúncio rápido na faixa: { title, sub, tone, until }
+// Zona de cura (medkit.js): o anfitrião decide quando e onde aparece; cada
+// um cura a própria vida enquanto está dentro
+const medkit = new MedkitDirector()
+const zoneHeal = new ZoneHealing()
+let medResend = 0       // anfitrião: reenvia o estado de tempos em tempos
+let healShown = 0       // cura acumulada ainda não mostrada ("+N VIDA" a cada 1 s)
+let healPopupTimer = 0
 let netTimer = 0
 // Levei uma batida com boost há pouco: se bater na parede até `until`,
 // perco mais vida
 let boostedUntil = 0
+let blastUntil = 0 // idem, depois da Onda de choque (aí os pneus também doem)
 const hitCooldown = new HitCooldown()
 // Batidas que EU anunciei como agressor (para não aplicar o empurrão do outro
 // por cima, quando os dois se acharam agressores da mesma batida)
@@ -297,7 +343,7 @@ function rerollLivery() {
 // --- Rede ----------------------------------------------------------------------------
 function setNetStatus(peerCount) {
   const players = peerCount + 1
-  netStatus.textContent = `Sala ${roomCode} · ${players} ${players === 1 ? 'jogador' : 'jogadores'}`
+  netStatus.textContent = `Room ${roomCode} · ${players} ${players === 1 ? 'player' : 'players'}`
 }
 
 // Fui atingido: o empurrão e o dano calculados por quem bateu valem para mim.
@@ -311,6 +357,8 @@ function receiveHit(hit, attackerId) {
     car.applyImpulse(new THREE.Vector3(hit.ix, 0, hit.iz))
   }
   if (hit.boosted) boostedUntil = now + WALL_DAMAGE_WINDOW
+  if (hit.blast) blastUntil = now + WALL_DAMAGE_WINDOW
+  if (hit.stun && !health.isShielded) stunUntil = Math.max(stunUntil, now + hit.stun)
   takeDamage(hit.damage)
 }
 
@@ -355,6 +403,7 @@ const menu = new MenuUI({
   onStart: hostStart,
   // Sair: volta para a tela inicial do zero (a conexão fecha junto)
   onLeave: () => location.assign(location.pathname),
+  onTest: enterTestRange,
 })
 
 function enterRoom(code, name) {
@@ -364,9 +413,10 @@ function enterRoom(code, name) {
   phase = 'lobby'
   // O endereço vira o link de convite (mantém ?painel, ?fps...)
   const params = new URLSearchParams(location.search)
-  params.set('sala', code)
+  params.delete('sala')
+  params.set('room', code)
   history.replaceState(null, '', `${location.pathname}?${params}`)
-  menu.showLobby(code, `${location.origin}${location.pathname}?sala=${code}`)
+  menu.showLobby(code, `${location.origin}${location.pathname}?room=${code}`)
   startMultiplayer()
   refreshLobby()
 }
@@ -376,7 +426,7 @@ const hello = () => ({ name: myName, since: joinedAt, phase: inMatch() ? 'playin
 function refreshLobby() {
   if (phase !== 'lobby') return
   const members = [{ id: net.selfId, name: myName, since: joinedAt, me: true }]
-  for (const [id, r] of roster) members.push({ id, name: r.name || 'Jogador', since: r.since, me: false })
+  for (const [id, r] of roster) members.push({ id, name: r.name || 'Player', since: r.since, me: false })
   const host = hostOf(members)
   members.sort((a, b) => a.since - b.since)
   menu.setRoster(members.map((m) => ({ ...m, host: m.id === host })), { isHost: host === net.selfId, ready: !!car })
@@ -406,6 +456,7 @@ function beginMatch(map, late = false) {
     if (livery) applyLivery(livery)
   })
   adoptLayout(map)
+  updateOrbCount()
   phase = 'countdown'
   countdown = COUNTDOWN
   goTimer = 0
@@ -413,7 +464,18 @@ function beginMatch(map, late = false) {
   scene.add(car.root)
   deathSpot = null
   lastSpawn = null
-  if (late) {
+  ultimate.reset()
+  ultSlot.reset()
+  storm.reset()
+  ultClaimed = ultGot = -1
+  ultNews = null
+  medkit.reset()
+  zoneHeal.carry = 0
+  stunUntil = 0
+  if (testMode) {
+    spawnAt(TEST_SPAWN) // de frente para os bonecos
+    if (!dummies.size) addDummy()
+  } else if (late) {
     respawn() // os cantos podem estar ocupados: vai para o lugar mais vazio
   } else {
     const members = [{ id: net.selfId, since: joinedAt }]
@@ -434,10 +496,30 @@ function startMultiplayer() {
     onPeerJoin(peerId) {
       net.sendHello(hello(), peerId)
       if (inMatch()) net.sendLayout({ ...layout, orbs: orbs.snapshot() }, peerId)
+      if (inMatch() && amHost()) net.sendUlt(ultimate.snapshot(), peerId)
+      if (inMatch() && amHost()) net.sendMedkit(medkit.snapshot(), peerId)
+    },
+    // Ultimate: o estado vem do anfitrião; pedidos só o anfitrião atende
+    onUlt(state) {
+      if (!inMatch() || (amHost() && state.n <= ultimate.n)) return
+      if (ultimate.apply(state)) checkUltGiven()
+    },
+    // Zona de cura: o estado vem do anfitrião
+    onMedkit(state) {
+      if (!inMatch() || (amHost() && state.v <= medkit.v)) return
+      if (medkit.apply(state)?.length) announceMedkit()
+    },
+    onUltReq(req, peerId) {
+      if (!inMatch() || !amHost() || req.n !== ultimate.n) return
+      if (ultimate.claim(peerId)) {
+        checkUltGiven()
+        broadcastUlt()
+      }
     },
     onHello(info, peerId) {
       roster.set(peerId, info)
       refreshLobby()
+      updateOrbCount()
     },
     onStart(map) {
       if (phase === 'lobby') beginMatch(map)
@@ -463,19 +545,22 @@ function startMultiplayer() {
       roster.delete(peerId)
       remotes?.remove(peerId)
       refreshLobby() // se o anfitrião saiu, outro assume
+      updateOrbCount()
     },
-    onPeerState(peerId, state) {
-      if (!remotes) return // carro ainda carregando
-      const { player, liveryChanged, knockedOut } = remotes.applyState(peerId, state, performance.now() / 1000)
-      if (knockedOut) scoreUI.popup(player.car.position, 'ko')
-      // Mesma pintura que a minha: um dos dois sorteia de novo (o de ID menor
-      // mantém, para os dois não trocarem ao mesmo tempo)
-      if (liveryChanged && state.livery === livery?.name && net.selfId > peerId) rerollLivery()
-    },
+    onPeerState: handlePeerState,
     onHit(hit, attackerId) {
       // O dano aparece em cima de quem levou a batida, para todo mundo ver
       const position = positionOf(hit.target)
-      if (hit.damage && position) scoreUI.popup(position, hit.boosted ? 'turbo' : tierOfDamage(hit.damage), hit.damage)
+      if (hit.zap) {
+        // Raio da Sobrecarga: desenha o raio do dono até o alvo
+        const from = positionOf(attackerId)
+        if (from && position) ultView.bolt(tmpBoltFrom.copy(from).setY(2.6), tmpBoltTo.copy(position).setY(0.8))
+        if (position) scoreUI.popup(position, hit.stun ? 'stun' : 'zap', hit.damage)
+      } else if (hit.blast) {
+        if (position) scoreUI.popup(position, 'blast', hit.damage) // Onda de choque
+      } else if (hit.damage && position) {
+        scoreUI.popup(position, hit.boosted ? 'turbo' : tierOfDamage(hit.damage), hit.damage)
+      }
       if (hit.target === net.selfId && inMatch()) receiveHit(hit, attackerId)
     },
     // Alguém bateu na parede depois de levar um boost (o dano já foi
@@ -486,8 +571,27 @@ function startMultiplayer() {
     },
   })
 
-  // Só no `npm run dev`: acesso pelo console do navegador para depuração
-  if (import.meta.env.DEV) window.__game = { net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
+  exposeDebug()
+}
+
+// Estado do carro de outro jogador (ou de um boneco do campo de testes)
+function handlePeerState(peerId, state) {
+  if (!remotes) return // carro ainda carregando
+  const { player, liveryChanged, knockedOut, ultStarted } = remotes.applyState(peerId, state, performance.now() / 1000)
+  if (knockedOut) scoreUI.popup(player.car.position, 'ko')
+  if (ultStarted) {
+    const spec = ULTIMATES[state.ult]
+    announce(`⚡ ${playerName(peerId)} ACTIVATED ${spec.name}!`, spec.enemyHint, 'enemy')
+    if (state.ult === 'shockwave') showShockwave(player.car.root.position, state.yaw)
+  }
+  // Mesma pintura que a minha: um dos dois sorteia de novo (o de ID menor
+  // mantém, para os dois não trocarem ao mesmo tempo)
+  if (liveryChanged && state.livery && state.livery === livery?.name && net.selfId > peerId) rerollLivery()
+}
+
+// Só no `npm run dev`: acesso pelo console do navegador para depuração
+function exposeDebug() {
+  if (import.meta.env.DEV) window.__game = { get boosts() { return boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
 }
 
 // --- Regras da partida (rodam no passo fixo) -------------------------------------
@@ -504,14 +608,11 @@ function updateBoost() {
     }
   }
   // Usar boost
-  if (wasPressed('Space') && boosts > 0 && !car.isBoosting) {
+  // Com ultimate na mão (guardado ou em uso), o boost fica travado: os dois
+  // juntos davam nocaute garantido. As esferas continuam indo para o estoque
+  if (wasPressed('Space') && boosts > 0 && !car.isBoosting && !boostLocked()) {
     boosts--
     car.boost()
-  }
-  // Brilho: só mexe nos materiais quando liga/desliga
-  if (car.isBoosting !== glowing) {
-    glowing = car.isBoosting
-    setBoostGlow(bodyMaterials, glowing)
   }
 }
 
@@ -521,16 +622,18 @@ function collideWalls(simTime) {
   for (const { normal, depth } of testArenaWalls(car.root.position, car.yaw, footprint, arena.halfX, arena.halfZ)) {
     hitWall(normal, depth, simTime)
   }
-  // Paredes de pneus: mesmo ricochete (sumido no nocaute, atravessa)
+  // Paredes de pneus: mesmo ricochete, mas pneu amortece: o combo do turbo
+  // não dói aqui, só o da Onda de choque (sumido no nocaute, atravessa)
   if (tireWalls && !health.isKO) {
-    for (const { normal, depth } of tireWalls.testCar(car.root.position, car.yaw, footprint)) hitWall(normal, depth, simTime)
+    for (const { normal, depth } of tireWalls.testCar(car.root.position, car.yaw, footprint)) hitWall(normal, depth, simTime, true)
   }
 }
 
-function hitWall(normal, depth, simTime) {
+function hitWall(normal, depth, simTime, tires = false) {
   const wallSpeed = car.hitWall(normal, depth)
-  if (simTime < boostedUntil && wallSpeed >= WALL_DAMAGE_MIN_SPEED) {
-    boostedUntil = 0
+  const combo = tires ? simTime < blastUntil : simTime < boostedUntil
+  if (combo && wallSpeed >= WALL_DAMAGE_MIN_SPEED) {
+    boostedUntil = blastUntil = 0 // o dano extra conta uma vez só
     net?.sendWall({ damage: WALL_DAMAGE })
     scoreUI.popup(car.root.position, 'wall', WALL_DAMAGE)
     takeDamage(WALL_DAMAGE)
@@ -575,7 +678,11 @@ function collideCars(simTime, wallTime) {
     car.separate(hit.normal, hit.depth)
 
     const judged = judgeHit(hit.normal, car.velocity, remote.velocity)
-    if (judged.role === 'victim') continue
+    if (judged.role === 'victim') {
+      const dummy = testMode && dummies.get(peerId)
+      if (dummy) dummyHitsMe(dummy, hit.normal, judged.impact, simTime)
+      continue
+    }
     const impulse = car.collisionImpulse(hit.normal, remote.velocity)
     if (impulse < MIN_IMPULSE || !hitCooldown.ready(peerId, simTime)) continue
 
@@ -608,7 +715,413 @@ function sendState(dt, simTime) {
     hp: health.hp,
     ko: health.isKO,
     shield: health.isShielded,
+    ult: ultSlot.active,
   })
+}
+
+// --- Campo de testes -------------------------------------------------------------------
+// Partida só minha, sem rede, com bonecos parados (testRange.js)
+let testMode = false
+let freeUltimate = false // ultimate sem recarga e sem prazo
+const dummies = new Map() // id -> TrainingDummy
+
+function enterTestRange(name) {
+  testMode = true
+  myName = name
+  joinedAt = Date.now()
+  roomCode = 'TESTE'
+  phase = 'lobby'
+  net = localNet(hitDummy) // nada sai do computador; batidas vão para os bonecos
+  netStatus.textContent = 'Practice range · solo'
+  new TestPanel({
+    ultimates: ULT_KINDS.map((kind) => ({ kind, name: ULTIMATES[kind].name })),
+    onFreeToggle: (on) => (freeUltimate = on),
+    actions: {
+      giveUltimate(kind) {
+        ultSlot.kind = null // troca o guardado pelo escolhido
+        ultSlot.give(kind)
+        announce(`⚡ ${ULTIMATES[kind].name} READY`, 'press E to use', 'mine')
+      },
+      resetCooldown: () => (ultSlot.cooldown = 0),
+      spawnItem() {
+        if (ultimate.phase !== 'available') ultimate.timer = Math.min(ultimate.timer, 0.01)
+      },
+      addDummy,
+      spawnMedkit() {
+        // Perto de quem tem menos vida (eu ou um boneco)
+        const players = playersWithHp()
+        if (!players.length) return
+        const spot = placeMedkit(players.reduce((a, b) => (b.hp < a.hp ? b : a)))
+        if (!spot) return
+        medkit.spawn(spot)
+        announceMedkit()
+      },
+      reviveDummies: () => dummies.forEach((d) => d.revive()),
+      heal() {
+        health.hp = MAX_HEALTH
+        health.koTimer = 0
+      },
+      hurt: () => takeDamage(30),
+      fillBoosts: () => (boosts = MAX_BOOSTS),
+      exit: () => location.assign(location.pathname),
+    },
+  })
+  exposeDebug()
+  beginMatch(newLayout())
+}
+
+// Batida "mandada" para um boneco: aplica direto nele
+function hitDummy(hit) {
+  dummies.get(hit.target)?.receive(hit, loop.simTime)
+}
+
+// Boneco novo no primeiro lugar livre (sem boneco nem obstáculo)
+function addDummy() {
+  const taken = (s) => [...dummies.values()].some((d) => d.spot === s)
+  const spot = DUMMY_SPOTS.find((s) => !taken(s) && isFree(s.x, s.z))
+  if (!spot) return
+  const n = dummies.size + 1
+  // Física de carro de verdade (mesmos parâmetros do meu), sem modelo visível:
+  // o desenho é o carro remoto, como o de qualquer jogador
+  const body = new Car(new THREE.Object3D())
+  body.params = car.params
+  const dummy = new TrainingDummy(`boneco-${n}`, n === 1 ? 'Training Dummy' : `Dummy ${n}`, body, spot)
+  dummies.set(dummy.id, dummy)
+}
+
+// Bonecos: vida (volta do nocaute) e "estado pela rede" como um jogador
+function updateDummies(dt, simTime) {
+  const list = [...dummies.values()]
+  for (const d of list) {
+    d.update(dt)
+    if (d.health.isKO) continue
+    collideDummy(d, simTime)
+    // Zona de cura vale para eles também
+    if (medkit.contains(d.x, d.z)) {
+      d.zoneHeal ??= new ZoneHealing()
+      const healed = d.health.heal(d.zoneHeal.update(dt, d.health.hp))
+      d.healShown = (d.healShown ?? 0) + healed
+    }
+    if ((d.healTimer = (d.healTimer ?? 0) + dt) >= 1) {
+      if (d.healShown) scoreUI.popup(d.car.root.position, 'heal', d.healShown)
+      d.healTimer = d.healShown = 0
+    }
+  }
+  // Boneco contra boneco: separa e troca o empurrão (sem dano)
+  for (let i = 0; i < list.length; i++) {
+    for (let j = i + 1; j < list.length; j++) {
+      const a = list[i].car, b = list[j].car
+      if (list[i].health.isKO || list[j].health.isKO) continue
+      const hit = testCars(a.root.position, a.yaw, b.root.position, b.yaw, footprint)
+      if (!hit) continue
+      a.separate(hit.normal, hit.depth / 2)
+      b.separate(tmpImpulse.copy(hit.normal).negate(), hit.depth / 2)
+      const impulse = a.collisionImpulse(hit.normal, b.velocity)
+      if (impulse <= 0) continue
+      a.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
+      b.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(-impulse))
+    }
+  }
+  for (const d of list) handlePeerState(d.id, d.state(simTime))
+}
+
+// Mureta, pneus e bastões, como o meu carro (com o combo turbo + mureta e
+// o dano dos espinhos)
+function collideDummy(d, simTime) {
+  const c = d.car, pos = c.root.position
+  const damage = (amount, kind) => {
+    if (d.health.damage(amount).dealt) scoreUI.popup(pos, kind, amount)
+  }
+  const wall = (normal, depth, tires) => {
+    const speed = c.hitWall(normal, depth)
+    const combo = tires ? simTime < d.blastUntil : simTime < d.boostedUntil
+    if (combo && speed >= WALL_DAMAGE_MIN_SPEED) {
+      d.boostedUntil = d.blastUntil = 0
+      damage(WALL_DAMAGE, 'wall')
+    }
+  }
+  for (const { normal, depth } of testArenaWalls(pos, c.yaw, footprint, arena.halfX, arena.halfZ)) wall(normal, depth, false)
+  if (tireWalls) for (const { normal, depth } of tireWalls.testCar(pos, c.yaw, footprint)) wall(normal, depth, true)
+  const hit = bats?.testCar(pos, c.yaw, footprint)
+  if (!hit) return
+  c.separate(hit.normal, hit.depth)
+  const into = -c.velocity.dot(hit.normal)
+  if (into < 0.3) return
+  c.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar((1 + BAT_BOUNCE) * into))
+  if (!d.batCooldown.ready(hit.index, simTime)) return
+  bats.kick(hit.index, -hit.normal.x, -hit.normal.z, into)
+  if (into >= SPIKE_MIN_SPEED) damage(DAMAGE.spike, 'spike')
+}
+
+// O boneco veio para cima de mim (eu sou a vítima): ele resolve a batida,
+// como faria um jogador de verdade
+function dummyHitsMe(d, normal, impact, simTime) {
+  const impulse = d.car.collisionImpulse(tmpImpulse.copy(normal).negate(), car.velocity)
+  if (impulse < MIN_IMPULSE || !d.hitCooldown.ready('eu', simTime)) return
+  d.car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(-impulse))
+  car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(impulse))
+  const tier = impactTier(impact)
+  if (!tier || health.isShielded) return
+  scoreUI.popup(car.root.position, tier, DAMAGE[tier])
+  takeDamage(DAMAGE[tier])
+}
+
+// --- Ultimate ------------------------------------------------------------------------
+const tmpBoltFrom = new THREE.Vector3()
+const tmpBoltTo = new THREE.Vector3()
+const stormTargets = []
+const activeStorms = []
+const stormPool = []
+
+const playerName = (peerId) =>
+  dummies.get(peerId)?.name || roster.get(peerId)?.name || `Player ${peerId.slice(0, 4).toUpperCase()}`
+
+// Ultimate guardado ou em uso trava o boost
+const boostLocked = () => !!(ultSlot.kind || ultSlot.active)
+
+// Com o ultimate em uso agora?
+const isPowered = (id) => (id === net.selfId ? !!ultSlot.active : !!remotes?.get(id)?.ult)
+
+// Anfitrião da sala (lobby.js): quem está há mais tempo. Decide o item do centro
+function amHost() {
+  const members = [{ id: net.selfId, since: joinedAt }]
+  for (const [id, r] of roster) members.push({ id, since: r.since })
+  return hostOf(members) === net.selfId
+}
+
+function broadcastUlt() {
+  net.sendUlt(ultimate.snapshot())
+  ultResend = 0
+}
+
+// Anúncio rápido na faixa do topo (some sozinho)
+function announce(title, sub, tone) {
+  ultNews = { title, sub, tone, until: performance.now() + 2500 }
+}
+
+// O anfitrião entregou um item: se foi para mim, vai para o inventário
+function checkUltGiven() {
+  const given = ultimate.given
+  if (!given || given.n <= ultGot) return
+  ultGot = given.n
+  const name = ULTIMATES[given.kind].name
+  if (given.owner === net.selfId) {
+    ultSlot.give(given.kind)
+    scoreUI.popup(car.root.position, 'ultget')
+    announce(`⚡ YOU GOT ${name}!`, `use it within ${Math.round(ultSlot.storedLeft)}s or lose it${ultSlot.cooldown > 0 ? ' (unlocks after cooldown)' : ' · press E'} · boost locked`, 'mine')
+  } else {
+    announce(`⚡ ${playerName(given.owner)} GOT ${name}`, 'watch out', 'enemy')
+  }
+}
+
+// Alvos dos ultimates: todos os outros carros na arena (jogadores e bonecos)
+function ultTargets() {
+  stormTargets.length = 0
+  for (const [id, p] of remotes.entries()) {
+    if (!p.car.hasState || p.ko) continue
+    stormTargets.push({ id, x: p.car.root.position.x, z: p.car.root.position.z, immune: p.shield })
+  }
+  return stormTargets
+}
+
+// Onda de choque: explosão única. Conta como batida com boost (boosted): quem
+// for arremessado contra a mureta leva o dano extra de PAREDE
+// Faixa na frente do carro, na direção para onde ele aponta. O carro para e
+// fica sem controle até a onda acabar (ultSlot.active), e pode levar dano
+let shockCast = null
+const SHOCK_NOSE = 1.4 // m do centro do carro até onde a faixa começa
+
+function fireShockwave() {
+  const yaw = car.yaw
+  const dir = { x: Math.sin(yaw), z: Math.cos(yaw) }
+  const pos = car.root.position
+  const origin = { x: pos.x + dir.x * SHOCK_NOSE, z: pos.z + dir.z * SHOCK_NOSE }
+  shockCast = new ShockwaveCast(ULTIMATES.shockwave, origin, dir)
+  car.halt()
+  showShockwave(pos, yaw)
+}
+
+// Faixa de aviso + onda; a tela treme quando a onda sai (mais perto de mim, mais forte)
+function showShockwave(carPosition, yaw) {
+  const spec = ULTIMATES.shockwave
+  const origin = { x: carPosition.x + Math.sin(yaw) * SHOCK_NOSE, z: carPosition.z + Math.cos(yaw) * SHOCK_NOSE }
+  ultView.shockwave(origin, yaw, spec, () => {
+    const dist = Math.hypot(origin.x - car.root.position.x, origin.z - car.root.position.z)
+    shake = Math.max(shake, 1.2 * Math.max(0, 1 - dist / (spec.length * 1.5)))
+  })
+}
+
+// Tremida da câmera: deslocamento aleatório que morre rápido (a câmera é
+// reposicionada todo quadro, então não acumula)
+let shake = 0
+function applyShake(dt) {
+  if (shake < 0.01) return
+  camera.position.x += (Math.random() - 0.5) * shake
+  camera.position.y += (Math.random() - 0.5) * shake
+  camera.position.z += (Math.random() - 0.5) * shake
+  shake *= Math.exp(-7 * dt)
+}
+
+// Passo fixo: relógio do item, pegar no centro, usar (E) e os raios
+function updateUltimate(dt, stunned) {
+  const host = amHost()
+  if (ultimate.update(dt, host)) broadcastUlt()
+  // Anfitrião reenvia o estado a cada 2 s: corrige relógios e mensagens perdidas
+  if (host && (ultResend += dt) >= 2) broadcastUlt()
+
+  const pos = car.root.position
+  // Pegar: vaga livre e passando no centro (o pedido vai ao anfitrião)
+  if (ultimate.phase === 'available' && ultSlot.canPickUp && !health.isKO && ultClaimed !== ultimate.n && Math.hypot(pos.x, pos.z) < ULT_PICKUP_RADIUS) {
+    ultClaimed = ultimate.n
+    if (!host) net.sendUltReq({ n: ultimate.n, op: 'claim' })
+    else if (ultimate.claim(net.selfId)) {
+      checkUltGiven()
+      broadcastUlt()
+    }
+  }
+
+  if (freeUltimate) {
+    ultSlot.cooldown = 0
+    if (ultSlot.kind) ultSlot.storedLeft = ULT_STORE_TIME
+  }
+  // Usar o guardado
+  if (wasPressed('KeyE') && ultSlot.ready && !health.isKO && !stunned) {
+    const kind = ultSlot.activate()
+    announce(`⚡ ${ULTIMATES[kind].name}!`, ULTIMATES[kind].hint, 'mine')
+    if (kind === 'overcharge') storm.reset()
+    if (kind === 'shockwave') fireShockwave()
+  }
+  if (health.isKO) ultSlot.stop() // nocauteado: o poder em uso acaba
+  if (ultSlot.active !== 'shockwave') shockCast = null // (cancela a onda no meio)
+  if (ultSlot.update(dt) === 'expired') announce('⚡ ULT EXPIRED', 'not used in time', 'enemy')
+
+  // Onda de choque: a frente anda pela faixa e acerta quem estiver nela
+  if (shockCast) {
+    for (const h of shockCast.update(dt, ultTargets())) {
+      net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage: h.damage, boosted: true, blast: true })
+      scoreUI.popup(remotes.get(h.id).car.root.position, 'blast', h.damage)
+    }
+    if (shockCast.done) shockCast = null
+  }
+
+  if (ultSlot.active !== 'overcharge') return
+  // Raios em quem estiver no círculo
+  for (const s of storm.update(dt, pos.x, pos.z, ultTargets())) {
+    const target = remotes.get(s.id)
+    const push = storm.spec.push
+    net.sendHit({ target: s.id, ix: s.dx * push, iz: s.dz * push, damage: s.damage, boosted: false, stun: s.stun, zap: true })
+    ultView.bolt(tmpBoltFrom.copy(pos).setY(2.6), tmpBoltTo.copy(target.car.root.position).setY(0.8))
+    scoreUI.popup(target.car.root.position, s.stun ? 'stun' : 'zap', s.damage)
+  }
+}
+
+// Desenho: feixe/item, círculos das tempestades, brilho e a faixa de aviso
+function renderUltimate(dt) {
+  activeStorms.length = 0
+  const addStorm = (position, kind) => {
+    const s = (stormPool[activeStorms.length] ??= {})
+    s.position = position
+    s.radius = ULTIMATES[kind].radius
+    activeStorms.push(s)
+  }
+  if (ultSlot.active === 'overcharge' && !health.isKO) addStorm(car.root.position, ultSlot.active)
+  let enemyPowered = null
+  for (const [id, p] of remotes.entries()) {
+    if (!p.ult || p.ko || !p.car.hasState) continue
+    if (p.ult === 'overcharge') addStorm(p.car.root.position, p.ult)
+    enemyPowered ??= id
+  }
+  ultView.update(dt, { phase: ultimate.phase, storms: activeStorms })
+
+  // Brilho da carroceria: pulsa com o ultimate; azul no boost
+  const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 70)
+  if (ultSlot.active && !health.isKO) {
+    setUltimateGlow(bodyMaterials, pulse)
+    glowing = 'ult'
+  } else {
+    const glow = car.isBoosting ? 'boost' : null
+    if (glow !== glowing) {
+      glowing = glow
+      setBoostGlow(bodyMaterials, !!glow)
+    }
+  }
+  remotes.updateGlow(pulse)
+  playerHud.health.root.classList.toggle('stunned', loop.simTime < stunUntil)
+
+  // Faixa no topo: anúncio recente > meu poder > poder de outro > item do centro
+  const now = performance.now()
+  const left = Math.max(0, Math.ceil(ultimate.timer))
+  if (ultNews && now < ultNews.until) {
+    ultBanner.show(ultNews)
+  } else if (ultSlot.active) {
+    ultBanner.show({ title: `⚡ ${ULTIMATES[ultSlot.active].name}! ${Math.ceil(ultSlot.activeLeft)}`, tone: 'mine' })
+  } else if (enemyPowered) {
+    const spec = ULTIMATES[remotes.get(enemyPowered).ult]
+    ultBanner.show({ title: `⚡ ${playerName(enemyPowered)} · ${spec.name}`, sub: spec.enemyHint, tone: 'enemy' })
+  } else if (ultimate.phase === 'warning') {
+    ultBanner.show({ title: `⚡ ULTIMATE IN ${left}`, sub: 'at the center of the arena', tone: 'warn' })
+  } else if (ultimate.phase === 'available') {
+    const sub = ultSlot.canPickUp ? 'drive over it to grab it' : 'your ult slot is full'
+    ultBanner.show({ title: `⚡ ${ULTIMATES[ultimate.kind].name} AT THE CENTER!`, sub, tone: 'go' })
+  } else {
+    ultBanner.show(null)
+  }
+}
+
+// --- Zona de cura ----------------------------------------------------------------------
+function broadcastMedkit() {
+  net.sendMedkit(medkit.snapshot())
+  medResend = 0
+}
+
+function announceMedkit() {
+  announce('💊 HEALING ZONE!', `stay inside: up to ${Math.round(MEDKIT.healOfMissing * 100)}% of missing HP in ${MEDKIT.duration}s`, 'heal')
+}
+
+// Carros na arena (eu e os outros, bonecos incluídos), com a vida
+function playersWithHp() {
+  const players = []
+  if (!health.isKO) players.push({ x: car.root.position.x, z: car.root.position.z, hp: health.hp })
+  for (const p of remotes.values()) {
+    if (p.car.hasState && !p.ko) players.push({ x: p.car.root.position.x, z: p.car.root.position.z, hp: p.hp })
+  }
+  return players
+}
+
+// Perto da briga: centro a poucos metros de `target` (o ferido daquela briga)
+function placeMedkit(target) {
+  return placeNearFight(medkitSpots, [target])
+}
+
+// Quantos na sala (no campo de testes, os bonecos contam)
+const playerCount = () => 1 + roster.size + (testMode ? dummies.size : 0)
+
+// Passo fixo: o anfitrião sorteia; eu curo enquanto estou dentro
+function updateMedkit(dt) {
+  const host = amHost()
+  const hurt = playersWithHp().filter((p) => p.hp <= MEDKIT.lowHp)
+  const born = medkit.update(dt, host, { hurt, place: placeMedkit, maxZones: maxZonesFor(playerCount()) })
+  if (born) {
+    if (born.length) announceMedkit()
+    broadcastMedkit()
+  }
+  if (host && (medResend += dt) >= 2) broadcastMedkit()
+
+  const pos = car.root.position
+  const inside = !health.isKO && medkit.contains(pos.x, pos.z)
+  playerHud.health.root.classList.toggle('healing', inside)
+  if (!inside) {
+    zoneHeal.carry = 0
+  } else {
+    healShown += health.heal(zoneHeal.update(dt, health.hp))
+  }
+  // "+N VIDA" uma vez por segundo, somando o que curou
+  healPopupTimer += dt
+  if (healPopupTimer >= 1) {
+    healPopupTimer = 0
+    if (healShown > 0) scoreUI.popup(pos, 'heal', healShown)
+    healShown = 0
+  }
 }
 
 // 3, 2, 1, JÁ! (carros parados até o fim)
@@ -634,14 +1147,20 @@ const loop = new FixedStepLoop({
     car.savePrevious()
     if (health.update(dt)) respawn()
     if (playing && isDown('KeyR') && !health.isKO) car.reset()
-    if (playing && !health.isKO) updateBoost()
-    // Nocauteado (ou na contagem) não dirige, mas ainda pode ser empurrado
-    car.update(dt, !playing || health.isKO ? NO_INPUT : readDriveInput())
+    const stunned = simTime < stunUntil
+    if (playing && !health.isKO && !stunned) updateBoost()
+    // Nocauteado, atordoado ou na contagem não dirige, mas ainda pode ser empurrado
+    // Lançando a Onda de choque: parado no lugar (ainda pode ser empurrado)
+    const rooted = ultSlot.active === 'shockwave'
+    car.update(dt, !playing || health.isKO || stunned || rooted ? NO_INPUT : readDriveInput())
     collideWalls(simTime)
     collideBats(simTime)
     if (net) {
       collideCars(simTime, wallTime)
+      if (playing) updateUltimate(dt, stunned)
+      if (playing) updateMedkit(dt)
       sendState(dt, simTime)
+      if (testMode) updateDummies(dt, simTime)
     }
   },
 
@@ -652,7 +1171,10 @@ const loop = new FixedStepLoop({
     if (car) presence.apply(car.root, presence.update(dt, !health.isKO))
     car?.beginRender(alpha) // pose interpolada entre os dois últimos passos
     groupCamera.update(dt, cameraSubjects())
+    applyShake(dt)
     if (car && inMatch()) sparks.update(dt, sparkEmitters())
+    if (car && inMatch()) renderUltimate(dt)
+    medViews.forEach((view, i) => view.update(dt, inMatch() ? medkit.zones[i] ?? null : null))
     bats?.update(dt)
     sun.follow(groupCamera.center, Math.max(12, groupCamera.distance * 0.55))
     scoreUI.update(dt, camera) // depois da câmera: "+N" no lugar certo deste quadro
@@ -665,6 +1187,14 @@ const loop = new FixedStepLoop({
         koTimer: health.koTimer,
         boosts,
         boosting: car.isBoosting,
+        boostLocked: boostLocked(),
+        ult: {
+          stored: ultSlot.kind && ULTIMATES[ultSlot.kind].name,
+          storedLeft: ultSlot.storedLeft,
+          active: ultSlot.active && ULTIMATES[ultSlot.active].name,
+          activeLeft: ultSlot.activeLeft,
+          cooldown: ultSlot.cooldown,
+        },
       })
       renderScoreboard(dt)
     }
@@ -682,11 +1212,13 @@ const arenaView = [
   { position: new THREE.Vector3(-arena.halfX * 0.7, 0, -arena.halfZ * 0.7), velocity: new THREE.Vector3() },
   { position: new THREE.Vector3(arena.halfX * 0.7, 0, arena.halfZ * 0.7), velocity: new THREE.Vector3() },
 ]
+const arenaCenter = { position: new THREE.Vector3(), velocity: new THREE.Vector3() }
 function cameraSubjects() {
   if (!inMatch()) return arenaView
   subjects.length = 0
   if (car && !health.isKO) subjects.push(car)
   if (remotes) for (const { car: remote, ko } of remotes.values()) if (remote.hasState && !ko) subjects.push(remote)
+  if (ultimate.phase === 'available') subjects.push(arenaCenter) // todo mundo vê onde está o item
   return subjects
 }
 
@@ -696,18 +1228,18 @@ const emitters = []
 const emitterPool = []
 function sparkEmitters() {
   emitters.length = 0
-  const add = (body, velocity, boosting) => {
+  const add = (body, velocity, boosting, powered) => {
     const e = (emitterPool[emitters.length] ??= {})
     e.tip = poleTip
     e.body = body
     e.velocity = velocity
-    // 0 parado, 1 na velocidade máxima; o boost passa disso
-    e.power = velocity.length() / car.params.maxSpeed + (boosting ? 0.5 : 0)
+    // 0 parado, 1 na velocidade máxima; o boost passa disso; o ultimate, muito
+    e.power = velocity.length() / car.params.maxSpeed + (boosting ? 0.5 : 0) + (powered ? 2.5 : 0)
     emitters.push(e)
   }
-  if (!health.isKO) add(car.body, car.velocity, car.isBoosting)
-  for (const { car: remote, boosting, ko } of remotes.values()) {
-    if (remote.hasState && !ko) add(remote.body, remote.velocity, boosting)
+  if (!health.isKO) add(car.body, car.velocity, car.isBoosting, isPowered(net.selfId))
+  for (const [peerId, { car: remote, boosting, ko }] of remotes.entries()) {
+    if (remote.hasState && !ko) add(remote.body, remote.velocity, boosting, isPowered(peerId))
   }
   return emitters
 }
@@ -725,12 +1257,13 @@ function carTagSubjects() {
     s.hp = hp
     s.position = position
     s.visible = visible
+    s.powered = isPowered(id)
     tagSubjects.push(s)
   }
   add(net.selfId, '', health.hp, car.root.position, !health.isKO) // o meu: só a barra
   for (const [peerId, player] of remotes.entries()) {
-    const name = roster.get(peerId)?.name || `Jogador ${peerId.slice(0, 4).toUpperCase()}`
-    add(peerId, name, player.hp, player.car.root.position, player.car.hasState && !player.ko)
+    const name = playerName(peerId)
+    add(peerId, isPowered(peerId) ? `⚡ ${name}` : name, player.hp, player.car.root.position, player.car.hasState && !player.ko)
   }
   return tagSubjects
 }
@@ -740,10 +1273,10 @@ function renderScoreboard(dt) {
   scoreboardTimer += dt
   if (scoreboardTimer < 0.25) return // 4x por segundo basta
   scoreboardTimer = 0
-  const players = [{ name: 'Você', color: swatch(readColors(bodyMaterials)), hp: health.hp, ko: health.isKO, isMe: true }]
+  const players = [{ name: 'You', color: swatch(readColors(bodyMaterials)), hp: health.hp, ko: health.isKO, isMe: true }]
   for (const [peerId, player] of remotes.entries()) {
     players.push({
-      name: roster.get(peerId)?.name || `Jogador ${peerId.slice(0, 4).toUpperCase()}`,
+      name: playerName(peerId),
       color: swatch(remotes.colors(player)),
       hp: player.hp,
       ko: player.ko,
@@ -764,6 +1297,7 @@ function applyQuality() {
   background.redraw()
   toonGlobals.uPixelRatio.value = renderer.getPixelRatio()
   sparks.setSize(window.innerWidth, window.innerHeight, renderer.getPixelRatio())
+  ultView.setSize(window.innerWidth, window.innerHeight, renderer.getPixelRatio())
   sun.setShadowResolution(quality.shadowSize)
   fpsMeter.dom.style.display = quality.showFps ? '' : 'none'
 }

@@ -127,6 +127,14 @@ export class Health {
     return { dealt, knockedOut }
   }
 
+  /** Recupera vida (nocauteado não). @returns quanto curou */
+  heal(amount) {
+    if (this.isKO || amount <= 0) return 0
+    const healed = Math.min(amount, MAX_HEALTH - this.hp)
+    this.hp += healed
+    return healed
+  }
+
   /** @returns {boolean} true no passo em que o nocaute acaba (hora de voltar) */
   update(dt) {
     if (this.shieldTimer > 0) this.shieldTimer = Math.max(0, this.shieldTimer - dt)

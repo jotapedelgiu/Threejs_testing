@@ -1,7 +1,7 @@
 import * as THREE from 'three'
 import { RemoteCar } from './remoteCar.js'
 import { createToonMaterial } from './toon.js'
-import { readColors, writeColors, setBoostGlow } from './paint.js'
+import { readColors, writeColors, setBoostGlow, setUltimateGlow } from './paint.js'
 import { Presence } from './presence.js'
 
 // Jogadores remotos: um RemoteCar por peer, com pintura própria, placar e
@@ -49,7 +49,7 @@ export class RemotePlayers {
     })
     const player = {
       car: new RemoteCar(model), bodyMaterials, livery: null,
-      hp: 0, ko: false, shield: false, boosting: false,
+      hp: 0, ko: false, shield: false, boosting: false, ult: null,
       presence: new Presence(), // some no nocaute, reaparece com "pop"
     }
     this.scene.add(player.car.root)
@@ -69,14 +69,12 @@ export class RemotePlayers {
     const knockedOut = state.ko && !player.ko // acabou de ser nocauteado
     player.ko = state.ko
     player.shield = state.shield
-    // Brilho só muda o uniform quando o boost liga/desliga (dirty flag)
-    if (state.boosting !== player.boosting) {
-      player.boosting = state.boosting
-      setBoostGlow(player.bodyMaterials, state.boosting)
-    }
+    player.boosting = state.boosting
+    const ultStarted = state.ult && !player.ult // acabou de ativar o ultimate
+    player.ult = state.ult
     const liveryChanged = state.livery !== player.livery
     player.livery = state.livery
-    return { player, liveryChanged, knockedOut }
+    return { player, liveryChanged, knockedOut, ultStarted }
   }
 
   remove(peerId) {
@@ -91,6 +89,25 @@ export class RemotePlayers {
   sample(localNow) {
     for (const { car } of this.players.values()) {
       if (car.hasState) car.sample(localNow)
+    }
+  }
+
+  /**
+   * Brilho da carroceria: pulsando com o ultimate, azul no boost. O do boost
+   * só mexe nos materiais quando liga/desliga (dirty flag).
+   * @param {number} pulse 0..1 (pulsação do brilho do ultimate)
+   */
+  updateGlow(pulse) {
+    for (const p of this.players.values()) {
+      if (p.ult && !p.ko) {
+        setUltimateGlow(p.bodyMaterials, pulse)
+        p.glow = 'ult'
+        continue
+      }
+      const glow = p.boosting ? 'boost' : null
+      if (glow === p.glow) continue
+      p.glow = glow
+      setBoostGlow(p.bodyMaterials, !!glow)
     }
   }
 

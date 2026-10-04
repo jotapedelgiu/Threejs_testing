@@ -11,7 +11,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { readFileSync } from 'node:fs'
 import { judgeHit, impactDamage, impactTier, tierOfDamage, DAMAGE, HitCooldown, damageParams, Health, MAX_HEALTH, KO_TIME, RESPAWN_SHIELD } from '../src/damage.js'
 import { validators } from '../src/protocol.js'
-import { Orbs } from '../src/orbs.js'
+import { Orbs, orbCountFor } from '../src/orbs.js'
 import { pickLivery, LIVERIES, materialGroup, MATERIAL_GROUPS } from '../src/paint.js'
 import { newLayout, shouldAdopt } from '../src/layout.js'
 import { Presence } from '../src/presence.js'
@@ -19,6 +19,8 @@ import { newRoomCode, normalizeCode, cleanName, hostOf, CODE_LENGTH } from '../s
 import { TireWalls, placeTireWalls, prepareTireWall } from '../src/tireWalls.js'
 import { distanceToSegment } from '../src/collision.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from '../src/spawns.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME } from '../src/ultimate.js'
+import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
 
 const DT = 1 / 60
 // Carro com o tamanho da base do bate-bate (~1,3 x 2,7 m)
@@ -224,8 +226,30 @@ describe('Esferas', () => {
     assert.ok(o.take(2, 0))
     assert.ok(!o.take(2, 0))
     assert.ok(!o.isActive(o.slots[2]))
-    o.update(9.1)
+    o.update(11.9)
+    assert.ok(!o.isActive(o.slots[2]), 'ainda esperando (12 s)')
+    o.update(0.2)
     assert.ok(o.isActive(o.slots[2]))
+  })
+
+  test('quantidade acompanha os jogadores, com teto', () => {
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 12].map(orbCountFor), [3, 3, 4, 4, 5, 5, 6, 6, 6])
+  })
+
+  test('menos jogadores: esferas a mais adormecem e voltam com a mesma geração', () => {
+    const o = make('a')
+    o.setCount(5)
+    assert.equal(o.count, 5)
+    o.update(0.1)
+    assert.ok(o.isActive(o.slots[4]))
+    o.take(4, 0)
+    o.setCount(3)
+    o.update(20)
+    assert.ok(!o.isActive(o.slots[4]) && !o.slots[4].mesh.visible, 'adormecida')
+    assert.equal(o.findPickup(o.slots[3].mesh.position), null, 'não dá para pegar')
+    o.setCount(5)
+    assert.equal(o.slots[4].gen, 1, 'mesma geração de antes (bate com os outros)')
+    assert.ok(o.isActive(o.slots[4]))
   })
 
   test('quem entra depois recebe o mesmo estado', () => {
@@ -267,17 +291,17 @@ describe('Materiais do modelo', () => {
   const group = (name) => MATERIAL_GROUPS[materialGroup(name)]?.name
 
   test('nomes do Blender, com ou sem sufixo de cópia', () => {
-    assert.equal(group('Body 1'), 'Carroceria (principal)')
-    assert.equal(group('Body 1.001'), 'Carroceria (principal)')
-    assert.equal(group('Special Metallic Car Paint.001'), 'Carroceria (secundária)')
-    assert.equal(group('rubber base.002'), 'Borracha e assento')
-    assert.equal(group('Procedural Leather.001'), 'Borracha e assento')
-    assert.equal(group('Car chrome.001'), 'Metal e detalhes')
+    assert.equal(group('Body 1'), 'Body (primary)')
+    assert.equal(group('Body 1.001'), 'Body (primary)')
+    assert.equal(group('Special Metallic Car Paint.001'), 'Body (secondary)')
+    assert.equal(group('rubber base.002'), 'Rubber & seat')
+    assert.equal(group('Procedural Leather.001'), 'Rubber & seat')
+    assert.equal(group('Car chrome.001'), 'Metal & trim')
   })
 
   test('nomes genéricos "Material.xxx" só valem exatos', () => {
-    assert.equal(group('Material.002'), 'Carroceria (secundária)')
-    assert.equal(group('Material.001'), 'Borracha e assento')
+    assert.equal(group('Material.002'), 'Body (secondary)')
+    assert.equal(group('Material.001'), 'Rubber & seat')
     assert.equal(materialGroup('Material.009'), -1) // desconhecido: cai no padrão
   })
 })
@@ -599,4 +623,271 @@ describe('Pontos de nascimento', () => {
       }
     }
   })
+})
+
+describe('Ultimate', () => {
+  const run = (d, seconds, host = true) => {
+    let changes = 0
+    for (let t = 0; t < seconds; t += 0.1) if (d.update(0.1, host)) changes++
+    return changes
+  }
+
+  test('item do centro: espera → aviso → no centro → alguém pega → espera de novo', () => {
+    const d = new UltimateDirector(() => 0)
+    run(d, ULT_INTERVAL - ULT_WARNING - 0.5)
+    assert.equal(d.phase, 'waiting')
+    run(d, 1)
+    assert.equal(d.phase, 'warning', 'aviso nos últimos 10 s')
+    run(d, ULT_WARNING)
+    assert.equal(d.phase, 'available')
+    assert.equal(d.kind, 'overcharge')
+    assert.ok(d.claim('ana'))
+    assert.deepEqual(d.given, { n: 0, owner: 'ana', kind: 'overcharge' })
+    assert.ok(!d.claim('beto'), 'um item, um dono')
+    assert.equal(d.phase, 'waiting')
+    assert.equal(d.n, 1)
+    assert.ok(d.timer > ULT_INTERVAL - 1, 'o próximo vem 1 min depois de pegarem')
+  })
+
+  test('só o anfitrião muda de fase; os outros seguem o estado dele', () => {
+    const host = new UltimateDirector(() => 0), guest = new UltimateDirector()
+    run(guest, ULT_INTERVAL + 5, false)
+    assert.equal(guest.phase, 'waiting', 'convidado não decide sozinho')
+    run(host, ULT_INTERVAL + 1)
+    host.claim('ana')
+    assert.ok(guest.apply(host.snapshot()))
+    assert.equal(guest.given.owner, 'ana')
+    assert.ok(!guest.apply({ ...host.snapshot(), n: -1 }), 'ciclo velho é ignorado')
+  })
+
+  test('inventário: guarda, usa quando quiser, 1 min de recarga', () => {
+    const slot = new UltimateSlot()
+    assert.ok(slot.canPickUp && !slot.ready)
+    assert.ok(slot.give('overcharge'))
+    assert.ok(!slot.canPickUp && !slot.give('overcharge'), 'uma vaga só')
+    for (let t = 0; t < 30; t += 0.1) slot.update(0.1)
+    assert.ok(slot.ready, 'guardado não estraga')
+    assert.equal(slot.activate(), 'overcharge')
+    assert.equal(slot.active, 'overcharge')
+    assert.ok(slot.canPickUp, 'em uso libera a vaga')
+    let ended = false
+    for (let t = 0; t < ULTIMATES.overcharge.duration + 0.2; t += 0.1) ended = slot.update(0.1) || ended
+    assert.ok(ended && !slot.active, 'o poder acaba sozinho')
+    for (let t = 0; t < 30; t += 0.1) slot.update(0.1)
+    slot.give('overcharge') // pegou outro no meio da recarga
+    assert.ok(!slot.ready && slot.activate() === null, 'espera a recarga')
+    for (let t = 0; t < ULT_COOLDOWN - 30; t += 0.1) slot.update(0.1)
+    assert.ok(slot.ready, 'recarga acabou, ainda dentro do prazo')
+  })
+
+  test('guardado se perde se não usar a tempo; nunca dois poderes ao mesmo tempo', () => {
+    assert.ok(ULT_STORE_TIME + ULTIMATES.overcharge.duration <= ULT_INTERVAL, 'usando no último instante, acaba antes do próximo item')
+    const slot = new UltimateSlot()
+    slot.give('overcharge')
+    let event = null
+    for (let t = 0; t < ULT_STORE_TIME - 0.5; t += 0.1) event = slot.update(0.1) ?? event
+    assert.equal(event, null)
+    assert.ok(slot.ready, 'ainda dá para usar')
+    for (let t = 0; t < 1; t += 0.1) event = slot.update(0.1) ?? event
+    assert.equal(event, 'expired')
+    assert.equal(slot.kind, null, 'perdeu')
+    assert.ok(slot.canPickUp, 'vaga livre para o próximo')
+  })
+
+  test('nocaute encerra o poder em uso, mas não o guardado', () => {
+    const slot = new UltimateSlot()
+    slot.give('overcharge')
+    slot.activate()
+    slot.give('overcharge')
+    slot.stop()
+    assert.equal(slot.active, null)
+    assert.equal(slot.kind, 'overcharge')
+  })
+
+  test('Sobrecarga: raio a cada 0,5 s em quem está no círculo; 3º raio atordoa', () => {
+    const s = new StormStrikes(ULTIMATES.overcharge)
+    const targets = [{ id: 'perto', x: 5, z: 0, immune: false }, { id: 'longe', x: 20, z: 0, immune: false }]
+    const all = []
+    for (let t = 0; t < 1.6; t += 0.1) all.push(...s.update(0.1, 0, 0, targets))
+    assert.equal(all.length, 3, '3 raios em 1,5 s')
+    assert.ok(all.every((h) => h.id === 'perto' && h.damage === 5))
+    assert.deepEqual(all.map((h) => h.stun), [0, 0, 1.25])
+    assert.ok(all[0].dx > 0.99, 'empurra para fora do círculo')
+  })
+
+  test('Sobrecarga: protegido leva o raio sem dano nem marca', () => {
+    const s = new StormStrikes(ULTIMATES.overcharge)
+    const hits = s.update(0.5, 0, 0, [{ id: 'p', x: 1, z: 0, immune: true }])
+    assert.equal(hits.length, 1)
+    assert.equal(hits[0].damage, 0)
+    assert.equal(s.marks.get('p'), undefined)
+  })
+
+  test('mensagens do ultimate validadas', () => {
+    assert.ok(validators.ult({ n: 2, phase: 'available', kind: 'overcharge', left: 0, given: null }))
+    const withGiven = validators.ult({ n: 3, phase: 'waiting', kind: null, left: 60, given: { n: 2, owner: 'abc', kind: 'overcharge' } })
+    assert.deepEqual(withGiven.given, { n: 2, owner: 'abc', kind: 'overcharge' })
+    assert.equal(validators.ult({ n: 3, phase: 'waiting', left: 60, given: { n: 2, owner: 'abc', kind: 'hackeado' } }), null)
+    assert.equal(validators.ult({ n: 2, phase: 'available', kind: 'hackeado', left: 0 }), null, 'tipo desconhecido')
+    assert.equal(validators.ult({ n: 2, phase: 'taken', left: 0 }), null)
+    assert.deepEqual(validators.ultreq({ n: 3, op: 'claim' }), { n: 3, op: 'claim' })
+    assert.equal(validators.ultreq({ n: 3, op: 'roubar' }), null)
+    const hit = validators.hit({ target: 'x', ix: 1, iz: 0, damage: 5, stun: 99, zap: true })
+    assert.equal(hit.stun, 3, 'atordoamento limitado')
+    assert.equal(hit.zap, true)
+    const state = validators.state({ t: 1, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0, ult: 'overcharge' })
+    assert.equal(state.ult, 'overcharge')
+    assert.equal(validators.state({ t: 1, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0, ult: 'deus' }).ult, null)
+  })
+
+})
+
+describe('Onda de choque', () => {
+  const spec = ULTIMATES.shockwave
+  // Carro na origem apontando para +x; faixa de 0 a 22 m em x, 6 m de largura
+  const cast = () => new ShockwaveCast(spec, { x: 0, z: 0 }, { x: 1, z: 0 })
+  const targets = [
+    { id: 'perto', x: 2, z: 0, immune: false },
+    { id: 'longe', x: 20, z: 1, immune: false },
+    { id: 'do lado', x: 10, z: 6, immune: false },
+    { id: 'atras', x: -5, z: 0, immune: false },
+    { id: 'protegido', x: 5, z: -2, immune: true },
+  ]
+  const runAll = (c) => {
+    const hits = []
+    for (let t = 0; t < spec.windup + spec.travel + 0.2; t += 1 / 60) hits.push(...c.update(1 / 60, targets))
+    return Object.fromEntries(hits.map((h) => [h.id, h]))
+  }
+
+  test('acerta só quem está na faixa na frente do carro', () => {
+    const hits = runAll(cast())
+    assert.ok(hits.perto && hits.longe && hits.protegido)
+    assert.ok(!hits['do lado'], 'fora da largura')
+    assert.ok(!hits.atras, 'atrás do carro')
+  })
+
+  test('preparação primeiro: nada antes da onda sair (dá para fugir)', () => {
+    const c = cast()
+    let early = []
+    for (let t = 0; t < spec.windup - 0.02; t += 1 / 60) early.push(...c.update(1 / 60, targets))
+    assert.equal(early.length, 0)
+  })
+
+  test('a onda anda: o perto é atingido antes do longe, e cada um uma vez só', () => {
+    const c = cast()
+    const order = []
+    for (let t = 0; t < spec.windup + spec.travel + 0.2; t += 1 / 60) {
+      for (const h of c.update(1 / 60, targets)) order.push(h.id)
+    }
+    assert.ok(order.indexOf('perto') < order.indexOf('longe'))
+    assert.equal(order.length, new Set(order).size, 'sem repetir')
+    assert.ok(c.done)
+  })
+
+  test('mais perto = mais dano e arremesso; empurra na direção da faixa', () => {
+    const hits = runAll(cast())
+    assert.ok(hits.perto.damage > hits.longe.damage)
+    assert.ok(hits.perto.damage <= spec.maxDamage && hits.longe.damage >= spec.minDamage)
+    assert.ok(hits.perto.push > hits.longe.push)
+    assert.deepEqual([hits.perto.dx, hits.perto.dz], [1, 0])
+    assert.equal(hits.protegido.damage, 0, 'protegido: só o arremesso')
+  })
+
+  test('quem usa fica parado o tempo todo da onda', () => {
+    assert.ok(Math.abs(spec.duration - (spec.windup + spec.travel)) < 1e-9)
+    assert.ok(ULT_KINDS.includes('shockwave') && ULT_KINDS.includes('overcharge'))
+    assert.ok(ULT_STORE_TIME + Math.max(...ULT_KINDS.map((k) => ULTIMATES[k].duration)) <= ULT_INTERVAL)
+  })
+})
+
+describe('Zona de cura', () => {
+  // place: centro 5 m ao lado do ferido daquela briga
+  const place = (t) => ({ x: t.x + 5, z: t.z })
+  const run = (d, seconds, hurt, { host = true, maxZones = 1 } = {}) => {
+    for (let t = 0; t < seconds; t += 0.1) d.update(0.1, host, { hurt, place, maxZones })
+  }
+  // Fica `seconds` dentro da zona começando com `hp`; devolve a vida final
+  const stayInside = (hp, seconds) => {
+    const z = new ZoneHealing()
+    for (let t = 0; t < seconds - 1e-9; t += 1 / 60) hp += z.update(1 / 60, hp)
+    return hp
+  }
+  const ferido = { x: -30, z: 0, hp: 20 }
+
+  test('só aparece com alguém de vida baixa, e é rara', () => {
+    const yes = new MedkitDirector(() => 0)
+    run(yes, 30, [])
+    assert.ok(!yes.active, 'todo mundo bem: nada')
+    run(yes, MEDKIT.checkEvery + 0.1, [ferido])
+    assert.equal(yes.zones.length, 1)
+    assert.deepEqual([yes.zones[0].x, yes.zones[0].z], [-25, 0], 'perto do ferido')
+    const no = new MedkitDirector(() => 0.99)
+    run(no, 60, [ferido])
+    assert.ok(!no.active, 'depende do sorteio')
+  })
+
+  test('dura alguns segundos; a região espera o intervalo; só o anfitrião decide', () => {
+    const d = new MedkitDirector(() => 0)
+    run(d, MEDKIT.checkEvery + 0.1, [ferido])
+    run(d, MEDKIT.duration + 1, [ferido], { host: false })
+    assert.ok(d.active, 'convidado não muda nada')
+    run(d, 0.2, [ferido])
+    assert.ok(!d.active, 'acabou')
+    run(d, MEDKIT.gap - 1, [ferido])
+    assert.ok(!d.active, 'mesma briga: intervalo')
+    run(d, MEDKIT.checkEvery + 1.2, [ferido])
+    assert.ok(d.active, 'depois do intervalo, outra')
+  })
+
+  test('duas brigas longe uma da outra: duas zonas (com jogadores suficientes)', () => {
+    const outraBriga = { x: 30, z: 10, hp: 25 }
+    const d = new MedkitDirector(() => 0)
+    run(d, MEDKIT.checkEvery * 3, [ferido, outraBriga], { maxZones: 2 })
+    assert.equal(d.zones.length, 2)
+    const [a, b] = d.zones
+    assert.ok(Math.hypot(a.x - b.x, a.z - b.z) > MEDKIT.separation, 'uma em cada briga')
+    const pouca = new MedkitDirector(() => 0)
+    run(pouca, MEDKIT.checkEvery * 3, [ferido, outraBriga], { maxZones: 1 })
+    assert.equal(pouca.zones.length, 1, 'sala pequena: uma só')
+  })
+
+  test('mesma briga: nunca duas zonas lado a lado', () => {
+    const vizinho = { x: -26, z: 3, hp: 15 }
+    const d = new MedkitDirector(() => 0)
+    run(d, MEDKIT.checkEvery * 3, [ferido, vizinho], { maxZones: 2 })
+    assert.equal(d.zones.length, 1)
+  })
+
+  test('zonas por quantidade de jogadores', () => {
+    assert.deepEqual([1, 4, 5, 6, 10, 20].map(maxZonesFor), [1, 1, 1, 2, 2, 2])
+  })
+
+  test('dentro do círculo a zona inteira: cura 90% da vida perdida', () => {
+    assert.ok(Math.abs(stayInside(20, MEDKIT.duration) - (20 + 0.9 * 80)) <= 1, `de 20 foi para ${stayInside(20, MEDKIT.duration)}`)
+    assert.ok(Math.abs(stayInside(60, MEDKIT.duration) - (60 + 0.9 * 40)) <= 1)
+    assert.ok(stayInside(20, MEDKIT.duration / 2) < stayInside(20, MEDKIT.duration), 'metade do tempo, menos cura')
+    assert.equal(stayInside(100, MEDKIT.duration), 100, 'vida cheia não passa de 100')
+    assert.ok(HEAL_RATE > 0.25 && HEAL_RATE < 0.33, '~29% do que falta por segundo')
+  })
+
+  test('aparece perto da briga: a poucos metros de quem tem menos vida', () => {
+    const grid = []
+    for (let x = -39; x <= 39; x += 5.6) for (let z = -22.5; z <= 22.5; z += 5.6) grid.push({ x, z })
+    const hurt = { x: -10, z: 2, hp: 20 }, attacker = { x: -4, z: 2, hp: 90 }
+    for (let i = 0; i < 50; i++) {
+      const p = placeNearFight(grid, [attacker, hurt])
+      const dw = Math.hypot(p.x - hurt.x, p.z - hurt.z)
+      assert.ok(dw >= 2.5 && dw <= 9, `centro a ${dw.toFixed(1)} m do ferido`)
+    }
+    const d = new MedkitDirector()
+    d.spawn({ x: 0, z: 0 })
+    assert.ok(d.contains(MEDKIT.radius - 0.1, 0) && !d.contains(MEDKIT.radius + 0.1, 0))
+  })
+
+  test('mensagem da zona validada', () => {
+    assert.ok(validators.medkit({ v: 3, zones: [{ id: 1, x: 3, z: 4, left: 8 }, { id: 2, x: -20, z: 0, left: 5 }] }))
+    assert.equal(validators.medkit({ v: 3, zones: [{ id: 1, x: NaN, z: 4, left: 8 }] }), null)
+    assert.equal(validators.medkit({ v: 3, zones: Array(9).fill({ id: 1, x: 0, z: 0, left: 1 }) }), null, 'zonas demais')
+  })
+
 })

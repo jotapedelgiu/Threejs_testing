@@ -1,0 +1,317 @@
+// Ultimate: um poder bem forte que aparece no centro da arena a cada minuto,
+// sorteado entre os tipos de ULTIMATES. Sem dependências, para poder ser
+// testado no Node.
+//
+// Item no centro: espera (60 s) → aviso nos últimos 10 s → item lá → alguém
+// pega → recomeça a espera. Quem pega guarda no inventário (UltimateSlot) e
+// tem até ULT_STORE_TIME para usar, senão perde; depois de usar, tem 1 min de
+// recarga.
+//
+// Sem servidor, o item é decidido pelo ANFITRIÃO da sala (lobby.js: quem está
+// há mais tempo): só ele avança as fases e concede o item, e avisa a sala a
+// cada mudança. Todos guardam uma cópia do estado e contam o tempo, então se
+// o anfitrião sair o próximo continua de onde parou. Como só o anfitrião
+// concede, um item nunca vai para dois jogadores. Usar o poder é com o dono:
+// ele avisa a sala pelo estado do carro (protocol.js: state.ult).
+
+export const ULT_INTERVAL = 60     // s entre um ultimate e o próximo
+export const ULT_WARNING = 10      // s de aviso antes de aparecer
+export const ULT_PICKUP_RADIUS = 2.5 // m do centro da arena para pegar
+export const ULT_COOLDOWN = 60     // s depois de usar até poder usar outro
+
+/** Tipos de ultimate (o sorteio usa todos os desta lista). */
+export const ULTIMATES = {
+  // Sobrecarga, inspirada na ult do Kennen (LoL): tempestade elétrica em volta
+  // do dono; raios periódicos em quem estiver dentro, e a cada 3 raios no
+  // mesmo alvo ele fica atordoado
+  overcharge: {
+    name: 'OVERCHARGE',
+    duration: 6,      // s
+    radius: 8,        // m em volta do dono
+    tick: 0.5,        // s entre raios
+    damage: 5,        // por raio
+    push: 3,          // m/s para fora do círculo, por raio
+    marksToStun: 3,   // raios no mesmo alvo para atordoar
+    stun: 1.25,       // s sem dirigir
+    hint: 'get close: lightning every 0.5s',
+    enemyHint: 'get out of the storm!',
+  },
+  // Onda de choque: faixa longa na frente do carro, na direção para onde ele
+  // está virado ao apertar E. Primeiro a faixa aparece no chão (preparação:
+  // dá para fugir), depois a onda percorre a faixa e arremessa para a frente
+  // quem estiver nela (mais forte quanto mais perto). Quem usa fica PARADO o
+  // tempo todo e pode levar dano. Conta como batida com boost: quem for parar
+  // na mureta OU nos pneus leva o dano extra de PAREDE
+  shockwave: {
+    name: 'SHOCKWAVE',
+    windup: 0.45,     // s de preparação (a faixa avisa no chão)
+    travel: 0.55,     // s da onda ir do carro até o fim da faixa
+    duration: 1,      // s parado (preparação + percurso)
+    length: 22,       // m
+    width: 6,         // m
+    maxDamage: 40,    // colado no carro
+    minDamage: 20,    // no fim da faixa
+    maxPush: 34,      // m/s colado no carro
+    minPush: 18,      // m/s no fim da faixa
+    hint: 'aim and fire: you are rooted while it casts',
+    enemyHint: 'get out of the line!',
+  },
+}
+export const ULT_KINDS = Object.keys(ULTIMATES)
+
+// Prazo para usar o guardado: até o próximo item aparecer, menos a duração do
+// poder. Mesmo usando no último instante, o poder acaba quando o próximo item
+// surge: nunca há dois ultimates ativos ao mesmo tempo
+export const ULT_STORE_TIME = ULT_INTERVAL - Math.max(...ULT_KINDS.map((k) => ULTIMATES[k].duration))
+
+export class UltimateDirector {
+  constructor(random = Math.random) {
+    this.random = random
+    this.reset()
+  }
+
+  /** Começo da partida. */
+  reset() {
+    this.n = 0             // número do ciclo (mensagens de ciclos velhos são ignoradas)
+    this.phase = 'waiting' // 'waiting' | 'warning' | 'available'
+    this.kind = null       // tipo do item no centro
+    this.timer = ULT_INTERVAL // s até a próxima fase
+    this.given = null      // último item entregue: { n, owner, kind }
+  }
+
+  /** Estado para mandar pela rede. */
+  snapshot() {
+    return { n: this.n, phase: this.phase, kind: this.kind, left: Math.max(0, this.timer), given: this.given }
+  }
+
+  /** Estado recebido do anfitrião. @returns se foi aceito */
+  apply(state) {
+    if (state.n < this.n) return false
+    this.n = state.n
+    this.phase = state.phase
+    this.kind = state.kind
+    this.timer = state.left
+    this.given = state.given
+    return true
+  }
+
+  /**
+   * Avança o relógio. Só o anfitrião muda de fase.
+   * @returns true se a fase mudou (o anfitrião avisa a sala)
+   */
+  update(dt, isHost) {
+    this.timer -= dt
+    if (!isHost) return false
+    if (this.phase === 'waiting' && this.timer <= ULT_WARNING) {
+      this.phase = 'warning'
+      return true
+    }
+    if (this.phase === 'warning' && this.timer <= 0) {
+      this.phase = 'available'
+      this.kind = ULT_KINDS[Math.floor(this.random() * ULT_KINDS.length)]
+      this.timer = 0
+      return true
+    }
+    return false
+  }
+
+  /**
+   * Anfitrião: `id` passou no centro. O item vai para ele e a espera
+   * recomeça. @returns se ganhou o item
+   */
+  claim(id) {
+    if (this.phase !== 'available') return false
+    this.given = { n: this.n, owner: id, kind: this.kind }
+    this.n++
+    this.phase = 'waiting'
+    this.kind = null
+    this.timer = ULT_INTERVAL
+    return true
+  }
+}
+
+/**
+ * Inventário de ultimate de um jogador: uma vaga, o poder ativo e a recarga.
+ * Cada jogador cuida do seu.
+ */
+export class UltimateSlot {
+  constructor() {
+    this.reset()
+  }
+
+  reset() {
+    this.kind = null    // guardado, esperando para usar
+    this.storedLeft = 0 // s até o guardado se perder
+    this.active = null  // em uso agora
+    this.activeLeft = 0 // s de poder que faltam
+    this.cooldown = 0   // s até poder usar outro
+  }
+
+  /** Vaga livre (dá para pegar o item do centro). */
+  get canPickUp() {
+    return !this.kind
+  }
+
+  /** Dá para usar agora? */
+  get ready() {
+    return !!this.kind && !this.active && this.cooldown <= 0
+  }
+
+  give(kind) {
+    if (this.kind) return false
+    this.kind = kind
+    this.storedLeft = ULT_STORE_TIME
+    return true
+  }
+
+  /** Usa o guardado. @returns o tipo ativado, ou null */
+  activate() {
+    if (!this.ready) return null
+    this.active = this.kind
+    this.kind = null
+    this.storedLeft = 0
+    this.activeLeft = ULTIMATES[this.active].duration
+    this.cooldown = ULT_COOLDOWN
+    return this.active
+  }
+
+  /** Nocaute: o poder em uso acaba (o guardado continua guardado). */
+  stop() {
+    this.active = null
+    this.activeLeft = 0
+  }
+
+  /**
+   * @returns 'ended' no passo em que o poder em uso acabou, 'expired' quando
+   *   o guardado se perdeu (não usou a tempo), senão null
+   */
+  update(dt) {
+    this.cooldown = Math.max(0, this.cooldown - dt)
+    if (this.kind) {
+      this.storedLeft -= dt
+      if (this.storedLeft <= 0) {
+        this.kind = null
+        this.storedLeft = 0
+        return 'expired'
+      }
+    }
+    if (!this.active) return null
+    this.activeLeft -= dt
+    if (this.activeLeft > 0) return null
+    this.stop()
+    return 'ended'
+  }
+}
+
+/**
+ * Raios da Sobrecarga, calculados pelo dono do poder: a cada `tick`, um raio
+ * em cada alvo dentro do círculo; a cada `marksToStun` raios no mesmo alvo,
+ * atordoa.
+ */
+export class StormStrikes {
+  constructor(spec = ULTIMATES.overcharge) {
+    this.spec = spec
+    this.marks = new Map() // id -> raios recebidos
+    this.clock = 0
+  }
+
+  reset() {
+    this.marks.clear()
+    this.clock = 0
+  }
+
+  /**
+   * @param {{ id: string, x: number, z: number, immune: boolean }[]} targets
+   *   immune = protegido (acabou de voltar do nocaute): leva o raio sem dano
+   * @returns {{ id: string, damage: number, stun: number, dx: number, dz: number }[]}
+   *   dx/dz = direção do dono para o alvo (para o empurrão)
+   */
+  update(dt, cx, cz, targets) {
+    const strikes = []
+    const { tick, radius, damage, marksToStun, stun } = this.spec
+    this.clock += dt
+    while (this.clock >= tick) {
+      this.clock -= tick
+      for (const t of targets) {
+        const dx = t.x - cx, dz = t.z - cz
+        const dist = Math.hypot(dx, dz)
+        if (dist > radius) continue
+        if (t.immune) {
+          strikes.push({ id: t.id, damage: 0, stun: 0, dx: 0, dz: 0 })
+          continue
+        }
+        const marks = (this.marks.get(t.id) ?? 0) + 1
+        this.marks.set(t.id, marks)
+        strikes.push({
+          id: t.id,
+          damage,
+          stun: marks % marksToStun === 0 ? stun : 0,
+          dx: dist > 1e-6 ? dx / dist : 1,
+          dz: dist > 1e-6 ? dz / dist : 0,
+        })
+      }
+    }
+    return strikes
+  }
+}
+
+const TARGET_RADIUS = 0.6 // m: meio carro; encostar na faixa já conta
+
+/**
+ * Uma Onda de choque em andamento: preparação, depois a frente da onda anda
+ * pela faixa e acerta cada alvo quando passa por ele (uma vez só).
+ */
+export class ShockwaveCast {
+  /**
+   * @param {{ x: number, z: number }} origin frente do carro de quem usou
+   * @param {{ x: number, z: number }} dir direção da faixa (unitária)
+   */
+  constructor(spec, origin, dir) {
+    this.spec = spec
+    this.origin = { x: origin.x, z: origin.z }
+    this.dir = { x: dir.x, z: dir.z }
+    this.time = 0
+    this.hit = new Set()
+  }
+
+  /** Onde está a frente da onda (m ao longo da faixa); < 0 = ainda preparando. */
+  get front() {
+    const { windup, travel, length } = this.spec
+    return this.time < windup ? -1 : Math.min(length, ((this.time - windup) / travel) * length)
+  }
+
+  get done() {
+    return this.time >= this.spec.windup + this.spec.travel
+  }
+
+  /**
+   * @param {{ id: string, x: number, z: number, immune: boolean }[]} targets
+   *   immune = protegido: é arremessado, mas sem dano
+   * @returns {{ id: string, damage: number, push: number, dx: number, dz: number }[]}
+   *   dx/dz = direção do empurrão (a da faixa)
+   */
+  update(dt, targets) {
+    this.time += dt
+    const front = this.front
+    if (front < 0) return []
+    const { length, width, minDamage, maxDamage, minPush, maxPush } = this.spec
+    const hits = []
+    for (const t of targets) {
+      if (this.hit.has(t.id)) continue
+      const rx = t.x - this.origin.x, rz = t.z - this.origin.z
+      const along = rx * this.dir.x + rz * this.dir.z // distância ao longo da faixa
+      const side = Math.abs(rx * this.dir.z - rz * this.dir.x) // distância para o lado
+      if (along < -TARGET_RADIUS || along > front + TARGET_RADIUS || side > width / 2 + TARGET_RADIUS) continue
+      this.hit.add(t.id)
+      const near = 1 - Math.min(Math.max(along, 0), length) / length // 1 colado, 0 no fim
+      hits.push({
+        id: t.id,
+        damage: t.immune ? 0 : Math.round(minDamage + (maxDamage - minDamage) * near),
+        push: minPush + (maxPush - minPush) * near,
+        dx: this.dir.x,
+        dz: this.dir.z,
+      })
+    }
+    return hits
+  }
+}

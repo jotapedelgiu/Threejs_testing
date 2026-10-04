@@ -7,15 +7,15 @@ import * as THREE from 'three'
 // carroceria principal e a secundária. A secundária é um pouco mais clara para
 // as duas partes se separarem bem no toon.
 export const LIVERIES = [
-  { name: 'Fogo', primary: '#e63946', secondary: '#f4a261' },
-  { name: 'Oceano', primary: '#1d6fd8', secondary: '#2ec4b6' },
-  { name: 'Limão', primary: '#5fae1e', secondary: '#f2d43d' },
-  { name: 'Uva', primary: '#7b2cbf', secondary: '#e056a0' },
-  { name: 'Pôr do sol', primary: '#ff6b00', secondary: '#ffc300' },
-  { name: 'Menta', primary: '#1f9e63', secondary: '#38d1d6' },
+  { name: 'Blaze', primary: '#e63946', secondary: '#f4a261' },
+  { name: 'Ocean', primary: '#1d6fd8', secondary: '#2ec4b6' },
+  { name: 'Lime', primary: '#5fae1e', secondary: '#f2d43d' },
+  { name: 'Grape', primary: '#7b2cbf', secondary: '#e056a0' },
+  { name: 'Sunset', primary: '#ff6b00', secondary: '#ffc300' },
+  { name: 'Mint', primary: '#1f9e63', secondary: '#38d1d6' },
   { name: 'Coral', primary: '#e5386d', secondary: '#ff8a5c' },
-  { name: 'Noite', primary: '#3a3dce', secondary: '#a066e8' },
-  { name: 'Turquesa', primary: '#14b89a', secondary: '#4fb3f0' },
+  { name: 'Midnight', primary: '#3a3dce', secondary: '#a066e8' },
+  { name: 'Turquoise', primary: '#14b89a', secondary: '#4fb3f0' },
 ]
 
 /** Sorteia uma pintura, evitando os nomes em `taken` sempre que possível. */
@@ -48,6 +48,13 @@ export function setBoostGlow(materials, on) {
   for (const m of materials) m.uniforms.uEmissive.value.copy(on ? BOOST_GLOW : NO_GLOW)
 }
 
+// Ultimate ativo: carroceria pulsando em amarelo elétrico
+const ULT_GLOW = new THREE.Color('#ffd21f')
+/** @param {number} pulse 0..1 */
+export function setUltimateGlow(materials, pulse) {
+  for (const m of materials) m.uniforms.uEmissive.value.copy(ULT_GLOW).multiplyScalar(0.25 + 0.35 * pulse)
+}
+
 // --- Materiais do modelo --------------------------------------------------------
 // Os materiais do glTF são agrupados em poucos materiais toon; cada grupo vira
 // uma cor no painel. O agrupamento é pelo NOME do material no Blender (os IDs
@@ -57,17 +64,17 @@ export function setBoostGlow(materials, on) {
 // DEFAULT_GROUP. Os dois primeiros grupos são a carroceria, pintada pela
 // livery de cada jogador.
 export const MATERIAL_GROUPS = [
-  { name: 'Carroceria (principal)', color: '#3a3dce', glossiness: 8, materials: ['Body 1'] },
+  { name: 'Body (primary)', color: '#3a3dce', glossiness: 8, materials: ['Body 1'] },
   {
-    name: 'Carroceria (secundária)', color: '#a066e8', glossiness: 8,
+    name: 'Body (secondary)', color: '#a066e8', glossiness: 8,
     materials: ['Special Metallic Car Paint', 'Material.005', 'Material.002'], // .005/.002: retrovisor
   },
   {
-    name: 'Metal e detalhes', color: '#0000ff', glossiness: 10,
+    name: 'Metal & trim', color: '#0000ff', glossiness: 10,
     materials: ['Car chrome', 'Brushed Aluminum 2', 'glass', 'Iron Touched', 'iron.001', 'Red light'],
   },
   {
-    name: 'Borracha e assento', color: '#2a2a30', glossiness: 0,
+    name: 'Rubber & seat', color: '#2a2a30', glossiness: 0,
     materials: ['rubber base', 'Elastic Rubber', 'Material.001', 'HL Bulb Glow', 'HL Bulb Glow.001', 'Procedural Leather'],
   },
 ]

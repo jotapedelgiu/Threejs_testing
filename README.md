@@ -6,13 +6,18 @@ estilo quadrinhos (three.js). Jogue em
 
 ## Partida
 
-1. No menu, digite seu nome e clique em **Criar sala**.
-2. Mande o código (ex.: `K7QX`) ou o link de convite (`?sala=K7QX`) para os
+1. No menu, digite seu nome e clique em **Create room**.
+2. Mande o código (ex.: `K7QX`) ou o link de convite (`?room=K7QX`) para os
    amigos. Eles entram pelo link ou digitando o código.
 3. O anfitrião (quem criou a sala; se ele sair, o próximo que chegou assume)
-   clica em **Começar partida**. Contagem 3, 2, 1, JÁ! e todos saem juntos.
+   clica em **Start match**. Contagem 3, 2, 1, GO! e todos saem juntos.
 
 Quem chega com a partida rolando entra direto nela.
+
+**Campo de testes** (botão *Practice range* no menu): partida só sua, sem rede, com bonecos
+parados que têm vida (levam dano, são nocauteados e voltam) e um painel para
+pegar qualquer ultimate, zerar a recarga, chamar o item do centro e a zona
+de cura, adicionar bonecos e se curar.
 
 ## Controles
 
@@ -20,6 +25,7 @@ Quem chega com a partida rolando entra direto nela.
 |---|---|
 | W A S D / setas | dirigir |
 | Espaço | usar boost (pegue as esferas azuis; até 2) |
+| E | usar o ultimate guardado (pega no centro da arena; 1 min de recarga) |
 | R | voltar ao ponto de início |
 
 Vida: cada jogador tem 100. Toda batida tira de quem levou 4, 8 (FORTE) ou
@@ -62,6 +68,9 @@ ajusta física, câmera, cores e efeitos. No
 | `damage.js` | regras de batida, dano e vida (quem bateu, força, nocaute) |
 | `orbs.js` | esferas de boost com posições determinísticas por sala |
 | `bats.js` | bastões com espinhos: posição, colisão e animação de ricochete |
+| `ultimate.js` / `ultimateView.js` | ultimate a cada minuto no centro (anfitrião decide) e o visual dele |
+| `medkit.js` / `medkitView.js` | zona de cura: aparece perto da briga quando alguém está com a vida baixa; quem fica dentro cura até 90% da vida perdida |
+| `testRange.js` | campo de testes: bonecos com vida, rede de mentira e painel |
 | `spawns.js` | nascimento: um canto por jogador no início; renascer no ponto mais vazio (estilo Quake 3/Halo) |
 | `tireWalls.js` | paredes de pneus: sorteio pelo mapa, girando em 90°, e colisão |
 | `layout.js` | mapa de cada partida: semente nova, e a sala adota o mapa mais antigo |

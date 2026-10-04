@@ -42,11 +42,12 @@ export class MenuUI {
    *   onJoin: (name: string, code: string) => void,
    *   onStart: () => void,
    *   onLeave: () => void,
+   *   onTest: (name: string) => void,              // campo de testes (sozinho)
    * }} opts
    */
-  constructor({ inviteCode = '', onCreate, onJoin, onStart, onLeave }) {
+  constructor({ inviteCode = '', onCreate, onJoin, onStart, onLeave, onTest }) {
     this.root = el('div', 'menu')
-    this.home = this.buildHome(inviteCode, onCreate, onJoin)
+    this.home = this.buildHome(inviteCode, onCreate, onJoin, onTest)
     this.lobby = this.buildLobby(onStart, onLeave)
     this.lobby.hidden = true
     this.root.append(this.home, this.lobby)
@@ -57,27 +58,27 @@ export class MenuUI {
     ;(inviteCode ? this.joinButton : this.nameInput).focus()
   }
 
-  buildHome(inviteCode, onCreate, onJoin) {
+  buildHome(inviteCode, onCreate, onJoin, onTest) {
     const card = el('div', 'menu-card')
-    card.append(el('h1', 'logo', 'Bate-bate'), el('p', 'tagline', 'Carrinhos de bate-bate com os amigos'))
+    card.append(el('h1', 'logo', 'Bate-bate'), el('p', 'tagline', 'Bumper car brawls with your friends'))
 
     const nameField = el('label', 'field')
     this.nameInput = el('input')
     this.nameInput.maxLength = NAME_MAX
-    this.nameInput.placeholder = 'Seu nome'
+    this.nameInput.placeholder = 'Your name'
     this.nameInput.value = storage.get(NAME_KEY)
     this.nameInput.autocomplete = 'nickname'
-    nameField.append(el('span', '', 'Seu nome'), this.nameInput)
+    nameField.append(el('span', '', 'Your name'), this.nameInput)
 
     const name = () => {
-      const n = cleanName(this.nameInput.value) || 'Jogador'
+      const n = cleanName(this.nameInput.value) || 'Player'
       storage.set(NAME_KEY, n)
       return n
     }
 
     this.codeInput = el('input', 'code-input')
     this.codeInput.maxLength = CODE_MAX
-    this.codeInput.placeholder = 'CÓDIGO'
+    this.codeInput.placeholder = 'CODE'
     this.codeInput.value = inviteCode
     this.codeInput.autocomplete = 'off'
     this.codeInput.addEventListener('input', () => {
@@ -88,25 +89,27 @@ export class MenuUI {
     const join = () => {
       const code = normalizeCode(this.codeInput.value)
       if (!code) {
-        this.error.textContent = 'Digite o código da sala'
+        this.error.textContent = 'Enter a room code'
         this.codeInput.focus()
         return
       }
       onJoin(name(), code)
     }
-    this.joinButton = button(inviteCode ? `Entrar na sala ${inviteCode}` : 'Entrar', inviteCode ? 'primary' : '', join)
+    this.joinButton = button(inviteCode ? `Join room ${inviteCode}` : 'Join', inviteCode ? 'primary' : '', join)
     this.codeInput.addEventListener('keydown', (e) => e.key === 'Enter' && join())
-    const create = button('Criar sala', inviteCode ? '' : 'primary', () => onCreate(name()))
+    const create = button('Create room', inviteCode ? '' : 'primary', () => onCreate(name()))
+    // Sozinho, com bonecos para bater e um painel para testar as ultimates
+    const test = button('Practice range', 'ghost', () => onTest(name()))
 
     const joinRow = el('div', 'join-row')
     joinRow.append(this.codeInput, this.joinButton)
-    const or = el('div', 'or', 'ou entre numa sala')
+    const or = el('div', 'or', 'or join a room')
     // Veio de um convite: entrar vem primeiro
     if (inviteCode) {
       // O código já está no botão: sem campo para digitar
-      card.append(nameField, this.joinButton, el('div', 'or', 'ou'), create, this.error)
+      card.append(nameField, this.joinButton, el('div', 'or', 'or'), create, this.error, test)
     }
-    else card.append(nameField, create, or, joinRow, this.error)
+    else card.append(nameField, create, or, joinRow, this.error, test)
     return card
   }
 
@@ -116,19 +119,19 @@ export class MenuUI {
     this.linkInput = el('input', 'invite-link')
     this.linkInput.readOnly = true
     this.linkInput.addEventListener('focus', () => this.linkInput.select())
-    this.copyButton = button('Copiar link de convite', '', () => this.copyLink())
+    this.copyButton = button('Copy invite link', '', () => this.copyLink())
 
     this.rosterTitle = el('h3')
     this.roster = el('ul', 'roster')
-    this.startButton = button('Começar partida', 'primary', onStart)
+    this.startButton = button('Start match', 'primary', onStart)
     this.waiting = el('p', 'waiting')
 
     card.append(
-      el('p', 'eyebrow', 'Código da sala'), this.codeText,
+      el('p', 'eyebrow', 'Room code'), this.codeText,
       this.linkInput, this.copyButton,
       this.rosterTitle, this.roster,
       this.startButton, this.waiting,
-      button('Sair da sala', 'ghost', onLeave),
+      button('Leave room', 'ghost', onLeave),
     )
     return card
   }
@@ -143,13 +146,13 @@ export class MenuUI {
   async copyLink() {
     try {
       await navigator.clipboard.writeText(this.linkInput.value)
-      this.copyButton.textContent = 'Link copiado!'
+      this.copyButton.textContent = 'Link copied!'
     } catch {
       // Sem permissão: deixa o link selecionado para copiar com Ctrl+C
       this.linkInput.focus()
-      this.copyButton.textContent = 'Selecionado: Ctrl+C para copiar'
+      this.copyButton.textContent = 'Selected: press Ctrl+C'
     }
-    setTimeout(() => (this.copyButton.textContent = 'Copiar link de convite'), 2000)
+    setTimeout(() => (this.copyButton.textContent = 'Copy invite link'), 2000)
   }
 
   /**
@@ -157,20 +160,20 @@ export class MenuUI {
    * @param {{ isHost: boolean, ready: boolean }} state ready = o jogo terminou de carregar
    */
   setRoster(players, { isHost, ready }) {
-    this.rosterTitle.textContent = `Jogadores (${players.length})`
+    this.rosterTitle.textContent = `Players (${players.length})`
     this.roster.replaceChildren(...players.map((p) => {
       const li = el('li', p.me ? 'me' : '')
       li.append(el('span', 'name', p.name))
-      if (p.me) li.append(el('span', 'tag', 'você'))
-      if (p.host) li.append(el('span', 'tag host', 'anfitrião'))
+      if (p.me) li.append(el('span', 'tag', 'you'))
+      if (p.host) li.append(el('span', 'tag host', 'host'))
       return li
     }))
     this.startButton.hidden = !isHost
     this.startButton.disabled = !ready
-    this.startButton.textContent = ready ? 'Começar partida' : 'Carregando…'
+    this.startButton.textContent = ready ? 'Start match' : 'Loading…'
     this.waiting.textContent = isHost
-      ? (players.length === 1 ? 'Mande o link para os amigos, ou comece sozinho' : '')
-      : 'Esperando o anfitrião começar…'
+      ? (players.length === 1 ? 'Send the link to your friends, or start solo' : '')
+      : 'Waiting for the host to start…'
   }
 
   /** Esconde as telas (a partida começou). */
@@ -189,7 +192,7 @@ export class MenuUI {
       return
     }
     this.countdown.hidden = false
-    this.countdown.textContent = n > 0 ? String(n) : 'JÁ!'
+    this.countdown.textContent = n > 0 ? String(n) : 'GO!'
     this.countdown.classList.toggle('go', n <= 0)
     // Reinicia a animação a cada número
     this.countdown.style.animation = 'none'

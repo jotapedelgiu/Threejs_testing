@@ -12,13 +12,18 @@ const POPUP_DURATION = 1.1 // s
 // Texto e estilo de cada tipo; `n` é o dano daquela batida
 const POPUPS = {
   light: { text: (n) => `-${n}`, cls: 'mult-1' },
-  strong: { text: (n) => `-${n} FORTE!`, cls: 'mult-2' },
-  smash: { text: (n) => `-${n} PANCADA!`, cls: 'mult-3' },
-  turbo: { text: (n) => `-${n} TURBO!`, cls: 'turbo' },
-  wall: { text: (n) => `-${n} PAREDE!`, cls: 'wall' },
-  spike: { text: (n) => `-${n} ESPINHOS!`, cls: 'spike' },
-  ko: { text: () => 'NOCAUTE!', cls: 'ko' },
+  strong: { text: (n) => `-${n} HEAVY!`, cls: 'mult-2' },
+  smash: { text: (n) => `-${n} CRITICAL!`, cls: 'mult-3' },
+  turbo: { text: (n) => `-${n} BOOST SLAM!`, cls: 'turbo' },
+  wall: { text: (n) => `-${n} WALL SLAM!`, cls: 'wall' },
+  spike: { text: (n) => `-${n} SPIKED!`, cls: 'spike' },
+  ko: { text: () => 'K.O.!', cls: 'ko' },
   pickup: { text: () => '+1 BOOST', cls: 'pickup' },
+  zap: { text: (n) => (n ? `-${n} ZAP!` : 'ZAP!'), cls: 'zap' },
+  stun: { text: () => 'STUNNED!', cls: 'stun' },
+  ultget: { text: () => '+ULT', cls: 'zap' },
+  blast: { text: (n) => (n ? `-${n} BOOM!` : 'BOOM!'), cls: 'blast' },
+  heal: { text: (n) => (n ? `+${n} HP` : '+HP'), cls: 'heal' },
 }
 
 const el = (tag, className, text) => {
@@ -44,7 +49,7 @@ function healthBar(hp) {
 export class ScoreUI {
   constructor() {
     this.board = el('div', 'scoreboard')
-    this.board.append(el('h2', '', 'Vida'))
+    this.board.append(el('h2', '', 'Health'))
     this.list = el('ol')
     this.board.append(this.list)
     document.body.append(this.board)
@@ -117,7 +122,7 @@ class HealthBar {
     this.root = el('div', 'health-hud')
     const head = el('div', 'hp-head')
     this.number = el('span', 'hp-num', String(MAX_HEALTH))
-    head.append(el('span', 'hp-label', 'Vida'), this.number, el('span', 'hp-max', `/ ${MAX_HEALTH}`))
+    head.append(el('span', 'hp-label', 'HP'), this.number, el('span', 'hp-max', `/ ${MAX_HEALTH}`))
     this.frame = el('div', 'hp-frame')
     this.lag = el('span', 'hp-lag')
     this.fill = el('span', 'hp-fill')
@@ -174,22 +179,64 @@ export class PlayerHud {
     this.root = el('div', 'player-hud')
     const slots = el('div', 'slots')
     this.slots = Array.from({ length: maxBoosts }, () => slots.appendChild(el('span', 'slot')))
-    this.boostHint = el('div', 'hint', 'ESPAÇO: boost')
+    // Vaga do ultimate: guardado / pronto (E) / em uso / recarga
+    this.ult = el('div', 'ult-slot')
+    this.ultIcon = el('span', 'ult-icon', '⚡')
+    this.ultText = el('span', 'ult-text')
+    this.ult.append(this.ultIcon, this.ultText)
+    slots.append(this.ult)
+    this.boostHint = el('div', 'hint', 'SPACE: boost · E: ult')
     this.root.append(slots, this.boostHint)
     document.body.append(this.root)
     this.lastKey = ''
   }
 
-  render({ hp, ko, shielded, koTimer, boosts, boosting }) {
-    const key = `${hp}:${ko}:${shielded}:${Math.ceil(koTimer)}:${boosts}:${boosting}`
+  /**
+   * @param {{ hp, ko, shielded, koTimer, boosts, boosting, boostLocked,
+   *   ult: { stored: string | null, storedLeft: number, active: string | null, activeLeft: number, cooldown: number } }} s
+   *   ult.stored/active = nome do ultimate guardado / em uso; storedLeft = s até perder o guardado
+   */
+  render({ hp, ko, shielded, koTimer, boosts, boosting, boostLocked, ult }) {
+    const ultKey = `${ult.stored}:${Math.ceil(ult.storedLeft)}:${ult.active}:${Math.ceil(ult.activeLeft)}:${Math.ceil(ult.cooldown)}`
+    const key = `${hp}:${ko}:${shielded}:${Math.ceil(koTimer)}:${boosts}:${boosting}:${boostLocked}:${ultKey}`
     if (key === this.lastKey) return
     this.lastKey = key
     this.health.set(hp)
-    this.health.status.textContent = ko ? `NOCAUTE · volta em ${Math.ceil(koTimer)}` : ''
+    this.health.status.textContent = ko ? `KNOCKED OUT · respawn in ${Math.ceil(koTimer)}` : ''
     this.health.root.classList.toggle('ko', ko)
     this.health.root.classList.toggle('shielded', shielded)
     this.root.classList.toggle('boosting', boosting)
+    // Ultimate na mão: boost travado
+    this.root.classList.toggle('boost-locked', boostLocked)
+    this.boostHint.textContent = boostLocked ? 'BOOST LOCKED: use your ult (E)' : 'SPACE: boost · E: ult'
     this.slots.forEach((s, i) => s.classList.toggle('full', i < boosts))
+    this.renderUlt(ult)
+  }
+
+  renderUlt({ stored, storedLeft, active, activeLeft, cooldown }) {
+    const wait = Math.ceil(cooldown)
+    const expires = Math.ceil(storedLeft)
+    let text, state
+    if (active) {
+      text = `${active} · ${Math.ceil(activeLeft)}s`
+      state = 'active'
+    } else if (stored && wait > 0) {
+      text = `${stored} · ready in ${wait}s`
+      state = 'stored'
+    } else if (stored) {
+      text = `${stored} · E · ${expires}s`
+      state = 'ready'
+    } else if (wait > 0) {
+      text = `cooldown ${wait}s`
+      state = 'empty'
+    } else {
+      text = 'no ult'
+      state = 'empty'
+    }
+    this.ultText.textContent = text
+    this.ult.className = `ult-slot ${state}`
+    // Últimos 10 s para usar: pisca em vermelho
+    this.ult.classList.toggle('expiring', !!stored && !active && expires <= 10)
   }
 }
 
@@ -247,7 +294,8 @@ export class CarTags {
 
   /**
    * @param {THREE.Camera} camera
-   * @param {Iterable<{ id: string, name: string, hp: number, position: THREE.Vector3, visible: boolean }>} subjects
+   * @param {Iterable<{ id: string, name: string, hp: number, position: THREE.Vector3, visible: boolean, powered: boolean }>} subjects
+   *   powered = está com o ultimate (nome destacado)
    *   name vazio = só a barra (meu carro)
    */
   update(camera, subjects) {
@@ -261,6 +309,10 @@ export class CarTags {
       const barAt = s.visible ? this.toScreen(this.tmp.copy(s.position).setY(0).add(this.ahead), camera) : null
       tag.name.hidden = !nameAt
       tag.bar.hidden = !barAt
+      if (s.powered !== tag.powered) {
+        tag.powered = s.powered
+        tag.name.classList.toggle('powered', s.powered)
+      }
       if (nameAt) {
         if (s.name !== tag.text) tag.name.textContent = tag.text = s.name
         tag.name.style.transform = `translate(${nameAt[0]}px, ${nameAt[1]}px) translate(-50%, -100%)`
@@ -276,6 +328,40 @@ export class CarTags {
       tag.name.remove()
       tag.bar.remove()
       this.tags.delete(id)
+    }
+  }
+}
+
+/**
+ * Faixa do ultimate no topo da tela: contagem do aviso, "no centro!", quem
+ * pegou e quanto tempo falta. Só mexe no DOM quando o texto muda.
+ */
+export class UltimateBanner {
+  constructor() {
+    this.root = el('div', 'ult-banner')
+    this.title = el('div', 'ult-title')
+    this.sub = el('div', 'ult-sub')
+    this.root.append(this.title, this.sub)
+    this.root.hidden = true
+    document.body.append(this.root)
+    this.key = ''
+  }
+
+  /** @param {{ title: string, sub?: string, tone?: 'warn' | 'go' | 'mine' | 'enemy' } | null} info */
+  show(info) {
+    const key = info ? `${info.title}|${info.sub ?? ''}|${info.tone ?? ''}` : ''
+    if (key === this.key) return
+    const appearing = !this.key && key
+    this.key = key
+    this.root.hidden = !info
+    if (!info) return
+    this.title.textContent = info.title
+    this.sub.textContent = info.sub ?? ''
+    this.root.className = `ult-banner ${info.tone ?? ''}`
+    if (appearing) {
+      this.root.style.animation = 'none'
+      void this.root.offsetWidth
+      this.root.style.animation = ''
     }
   }
 }

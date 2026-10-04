@@ -38,7 +38,7 @@ export class ControlPanel {
    * }} deps
    */
   constructor({ background, sun, arena, camera, sparks, batPaint, tirePaint, quality, onQualityChange, onRerollLivery }) {
-    const gui = (this.gui = new GUI({ title: 'Controles' }))
+    const gui = (this.gui = new GUI({ title: 'Settings' }))
     if (!new URLSearchParams(location.search).has('painel')) gui.hide()
     window.addEventListener('keydown', (e) => {
       if (e.code !== TOGGLE_KEY || e.repeat) return
@@ -46,102 +46,102 @@ export class ControlPanel {
       this.toggle()
     })
 
-    this.saveButton = gui.add({ save: () => this.save() }, 'save').name('Salvar configurações')
-    gui.add({ reset: () => gui.reset() }, 'reset').name('Restaurar padrões do código')
+    this.saveButton = gui.add({ save: () => this.save() }, 'save').name('Save settings')
+    gui.add({ reset: () => gui.reset() }, 'reset').name('Reset to code defaults')
     // Só faz sentido no servidor de desenvolvimento, que pode escrever o arquivo
     if (!import.meta.env.DEV) this.saveButton.hide()
 
     // Carrinho e materiais são preenchidos depois que o modelo carrega
-    this.carFolder = gui.addFolder('Carrinho')
-    this.materialsFolder = gui.addFolder('Materiais do carrinho')
+    this.carFolder = gui.addFolder('Car')
+    this.materialsFolder = gui.addFolder('Car materials')
     this.materialsFolder.hide()
-    this.liveryButton = this.materialsFolder.add({ reroll: onRerollLivery }, 'reroll').name('Sortear pintura')
+    this.liveryButton = this.materialsFolder.add({ reroll: onRerollLivery }, 'reroll').name('Random livery')
 
-    const damage = gui.addFolder('Dano (força em m/s)')
-    damage.add(damageParams, 'minImpact', 0, 9, 0.1).name('mínimo para dar dano')
-    damage.add(damageParams, 'strong', 0, 12, 0.1).name('FORTE a partir de')
-    damage.add(damageParams, 'smash', 0, 12, 0.1).name('PANCADA a partir de')
+    const damage = gui.addFolder('Damage (impact in m/s)')
+    damage.add(damageParams, 'minImpact', 0, 9, 0.1).name('min. impact for damage')
+    damage.add(damageParams, 'strong', 0, 12, 0.1).name('HEAVY from')
+    damage.add(damageParams, 'smash', 0, 12, 0.1).name('CRITICAL from')
 
-    const cam = gui.addFolder('Câmera')
+    const cam = gui.addFolder('Camera')
     const axes = () => camera.updateAxes()
-    cam.add(camera.params, 'elevation', 10, 90, 1).name('inclinação (°)').onChange(axes)
-    cam.add(camera.params, 'azimuth', 0, 360, 1).name('rotação (°)').onChange(axes)
-    cam.add(camera.params, 'fov', 10, 90, 1).name('campo de visão').onChange(axes)
-    cam.add(camera.params, 'minDistance', 5, 60, 0.5).name('distância mínima')
-    cam.add(camera.params, 'maxDistance', 20, 150, 1).name('distância máxima')
-    cam.add(camera.params, 'margin', 0, 15, 0.5).name('margem (m)')
-    cam.add(camera.params, 'lookAhead', 0, 2, 0.05).name('antecipação (s)')
-    cam.add(camera.params, 'smoothing', 0.5, 10, 0.1).name('suavidade (inv.)')
+    cam.add(camera.params, 'elevation', 10, 90, 1).name('pitch (°)').onChange(axes)
+    cam.add(camera.params, 'azimuth', 0, 360, 1).name('yaw (°)').onChange(axes)
+    cam.add(camera.params, 'fov', 10, 90, 1).name('field of view').onChange(axes)
+    cam.add(camera.params, 'minDistance', 5, 60, 0.5).name('min. distance')
+    cam.add(camera.params, 'maxDistance', 20, 150, 1).name('max. distance')
+    cam.add(camera.params, 'margin', 0, 15, 0.5).name('margin (m)')
+    cam.add(camera.params, 'lookAhead', 0, 2, 0.05).name('look-ahead (s)')
+    cam.add(camera.params, 'smoothing', 0.5, 10, 0.1).name('smoothing (inv.)')
 
     // Mantém o nome "Chão" para não perder valores já salvos
-    const ground = gui.addFolder('Chão')
+    const ground = gui.addFolder('Floor')
     const colors = () => arena.updateColors()
     const grid = () => arena.updateGrid()
-    ground.addColor(arena.params, 'color').name('cor').onChange(colors)
-    ground.add(arena.params, 'grid', 0, 0.6, 0.01).name('grade').onChange(grid)
-    ground.add(arena.params, 'tileSize', 0.5, 10, 0.5).name('tamanho do quadrado').onChange(grid)
-    ground.addColor(arena.params, 'wallColor').name('cor da mureta').onChange(colors)
+    ground.addColor(arena.params, 'color').name('color').onChange(colors)
+    ground.add(arena.params, 'grid', 0, 0.6, 0.01).name('grid').onChange(grid)
+    ground.add(arena.params, 'tileSize', 0.5, 10, 0.5).name('tile size').onChange(grid)
+    ground.addColor(arena.params, 'wallColor').name('wall color').onChange(colors)
 
-    const perf = gui.addFolder('Desempenho')
-    perf.add(quality, 'maxPixelRatio', 0.5, 2, 0.25).name('resolução máx. (pixel ratio)').onChange(onQualityChange)
-    perf.add(quality, 'shadowSize', { baixa: 512, média: 1024, alta: 2048 }).name('qualidade da sombra').onChange(onQualityChange)
-    perf.add(quality, 'showFps').name('mostrar FPS').onChange(onQualityChange)
+    const perf = gui.addFolder('Performance')
+    perf.add(quality, 'maxPixelRatio', 0.5, 2, 0.25).name('max. resolution (pixel ratio)').onChange(onQualityChange)
+    perf.add(quality, 'shadowSize', { low: 512, medium: 1024, high: 2048 }).name('shadow quality').onChange(onQualityChange)
+    perf.add(quality, 'showFps').name('show FPS').onChange(onQualityChange)
 
-    const batFolder = gui.addFolder('Bastões')
-    batFolder.addColor(batPaint.params, 'base').name('cor da madeira').onChange(batPaint.apply)
-    batFolder.addColor(batPaint.params, 'spikes').name('cor dos espinhos').onChange(batPaint.apply)
+    const batFolder = gui.addFolder('Spiked posts')
+    batFolder.addColor(batPaint.params, 'base').name('wood color').onChange(batPaint.apply)
+    batFolder.addColor(batPaint.params, 'spikes').name('spike color').onChange(batPaint.apply)
 
-    const tireFolder = gui.addFolder('Pneus')
-    tireFolder.addColor(tirePaint.params, 'color').name('cor').onChange(tirePaint.apply)
+    const tireFolder = gui.addFolder('Tires')
+    tireFolder.addColor(tirePaint.params, 'color').name('color').onChange(tirePaint.apply)
 
-    const sparkFolder = gui.addFolder('Faíscas')
-    sparkFolder.add(sparks.params, 'enabled').name('ativar')
-    sparkFolder.add(sparks.params, 'intensity', 0, 4, 0.05).name('quantidade')
-    sparkFolder.add(sparks.params, 'arcs', 0, 3, 0.05).name('arcos elétricos')
-    sparkFolder.add(sparks.params, 'width', 1, 8, 0.5).name('espessura (px)')
-    sparkFolder.addColor(sparks.params, 'color').name('cor')
+    const sparkFolder = gui.addFolder('Sparks')
+    sparkFolder.add(sparks.params, 'enabled').name('enabled')
+    sparkFolder.add(sparks.params, 'intensity', 0, 4, 0.05).name('amount')
+    sparkFolder.add(sparks.params, 'arcs', 0, 3, 0.05).name('electric arcs')
+    sparkFolder.add(sparks.params, 'width', 1, 8, 0.5).name('thickness (px)')
+    sparkFolder.addColor(sparks.params, 'color').name('color')
 
-    const bg = gui.addFolder('Fundo')
+    const bg = gui.addFolder('Background')
     const redraw = () => background.redraw()
-    bg.addColor(background.params, 'center').name('cor do centro').onChange(redraw)
-    bg.addColor(background.params, 'edge').name('cor da borda').onChange(redraw)
-    bg.add(background.params, 'radius', 0.1, 2, 0.01).name('raio').onChange(redraw)
+    bg.addColor(background.params, 'center').name('center color').onChange(redraw)
+    bg.addColor(background.params, 'edge').name('edge color').onChange(redraw)
+    bg.add(background.params, 'radius', 0.1, 2, 0.01).name('radius').onChange(redraw)
 
-    const shading = gui.addFolder('Sombreamento')
-    shading.add(toonGlobals.uThreshold, 'value', -0.5, 0.5, 0.01).name('limite luz/sombra')
-    shading.add(toonGlobals.uSoftness, 'value', 0.001, 0.3, 0.001).name('suavidade da faixa')
-    shading.addColor(colorProxy(toonGlobals.uShadowTint), 'value').name('tom da sombra')
-    shading.add(toonGlobals.uAmbient, 'value', 0, 1, 0.01).name('ambiente')
+    const shading = gui.addFolder('Shading')
+    shading.add(toonGlobals.uThreshold, 'value', -0.5, 0.5, 0.01).name('light/shadow threshold')
+    shading.add(toonGlobals.uSoftness, 'value', 0.001, 0.3, 0.001).name('band softness')
+    shading.addColor(colorProxy(toonGlobals.uShadowTint), 'value').name('shadow tint')
+    shading.add(toonGlobals.uAmbient, 'value', 0, 1, 0.01).name('ambient')
 
     const rim = gui.addFolder('Rim light')
-    rim.add(toonGlobals.uRimStrength, 'value', 0, 2, 0.01).name('intensidade')
-    rim.add(toonGlobals.uRimThreshold, 'value', 0.3, 0.98, 0.01).name('espessura (inv.)')
+    rim.add(toonGlobals.uRimStrength, 'value', 0, 2, 0.01).name('intensity')
+    rim.add(toonGlobals.uRimThreshold, 'value', 0.3, 0.98, 0.01).name('thickness (inv.)')
 
-    const halftone = gui.addFolder('Retícula (quadrinhos)')
-    halftone.add(toonGlobals.uHalftone, 'value').name('ativar')
-    halftone.add(toonGlobals.uDotSpacing, 'value', 3, 24, 0.5).name('espaçamento (px)')
-    halftone.add(toonGlobals.uDotSize, 'value', 0.2, 1.5, 0.01).name('tamanho máximo')
+    const halftone = gui.addFolder('Halftone (comic)')
+    halftone.add(toonGlobals.uHalftone, 'value').name('enabled')
+    halftone.add(toonGlobals.uDotSpacing, 'value', 3, 24, 0.5).name('spacing (px)')
+    halftone.add(toonGlobals.uDotSize, 'value', 0.2, 1.5, 0.01).name('max. size')
     const dotAngle = {
       get deg() { return THREE.MathUtils.radToDeg(toonGlobals.uDotAngle.value) },
       set deg(v) { toonGlobals.uDotAngle.value = THREE.MathUtils.degToRad(v) },
     }
-    halftone.add(dotAngle, 'deg', 0, 90, 1).name('ângulo da grade')
-    halftone.add(toonGlobals.uDotDeep, 'value', 0, 1, 0.01).name('início da sombra densa')
-    halftone.add(toonGlobals.uDotTint, 'value', 0, 1, 0.01).name('tom azulado')
-    halftone.addColor(colorProxy(toonGlobals.uDotColor), 'value').name('cor da tinta')
+    halftone.add(dotAngle, 'deg', 0, 90, 1).name('grid angle')
+    halftone.add(toonGlobals.uDotDeep, 'value', 0, 1, 0.01).name('deep shadow start')
+    halftone.add(toonGlobals.uDotTint, 'value', 0, 1, 0.01).name('blue tint')
+    halftone.addColor(colorProxy(toonGlobals.uDotColor), 'value').name('ink color')
 
-    const outline = gui.addFolder('Contorno')
-    outline.add(outlineParams.uThickness, 'value', 0, 8, 0.1).name('espessura (px)')
-    outline.add(outlineOptions, 'fxaa').name('suavização (FXAA)')
-    outline.add(outlineParams.uDepthThreshold, 'value', 0.001, 0.2, 0.001).name('sensibilidade (prof.)')
-    outline.add(outlineParams.uNormalEdges, 'value').name('linhas em dobras')
-    outline.add(outlineParams.uNormalThreshold, 'value', 0.05, 1.5, 0.01).name('limite das dobras')
-    outline.addColor(colorProxy(outlineParams.uOutlineColor), 'value').name('cor')
+    const outline = gui.addFolder('Outline')
+    outline.add(outlineParams.uThickness, 'value', 0, 8, 0.1).name('thickness (px)')
+    outline.add(outlineOptions, 'fxaa').name('anti-aliasing (FXAA)')
+    outline.add(outlineParams.uDepthThreshold, 'value', 0.001, 0.2, 0.001).name('depth sensitivity')
+    outline.add(outlineParams.uNormalEdges, 'value').name('crease lines')
+    outline.add(outlineParams.uNormalThreshold, 'value', 0.05, 1.5, 0.01).name('crease threshold')
+    outline.addColor(colorProxy(outlineParams.uOutlineColor), 'value').name('color')
 
-    const sunFolder = gui.addFolder('Sol')
+    const sunFolder = gui.addFolder('Sun')
     const moveSun = () => sun.updatePosition()
-    sunFolder.add(sun.params, 'azimuth', 0, 360, 1).name('azimute').onChange(moveSun)
-    sunFolder.add(sun.params, 'elevation', -89, 89, 1).name('elevação').onChange(moveSun)
+    sunFolder.add(sun.params, 'azimuth', 0, 360, 1).name('azimuth').onChange(moveSun)
+    sunFolder.add(sun.params, 'elevation', -89, 89, 1).name('elevation').onChange(moveSun)
 
     // Pastas de visual começam fechadas para o painel não tomar a tela
     for (const f of [bg, shading, rim, halftone, outline, sunFolder]) f.close()
@@ -154,19 +154,19 @@ export class ControlPanel {
    */
   addCarControls(params) {
     const f = this.carFolder
-    f.add(params, 'maxSpeed', 2, 30, 0.5).name('velocidade máx.')
-    f.add(params, 'acceleration', 1, 20, 0.5).name('aceleração')
-    f.add(params, 'accelCurve', 0.5, 6, 0.1).name('curva de aceleração')
-    f.add(params, 'throttleResponse', 0, 2, 0.05).name('resposta do pedal (s)')
-    f.add(params, 'turnSpeed', 0.5, 6, 0.1).name('giro')
-    f.add(params, 'steerResponse', 0, 1.5, 0.05).name('peso do volante (s)')
-    f.add(params, 'steerReturn', 0, 1, 0.05).name('volta do volante (s)')
-    f.add(params, 'turnInertia', 0, 0.6, 0.01).name('inércia do giro (s)')
-    f.add(params, 'lean', 0, 3, 0.1).name('inclinação')
-    f.add(params, 'bounciness', 0, 1.5, 0.05).name('elasticidade da batida')
-    f.add(params, 'wallBounce', 0, 1.2, 0.05).name('elasticidade da parede')
-    f.add(params, 'knockDrag', 0.5, 10, 0.1).name('freio do empurrão')
-    f.add(params, 'hop', 0, 3, 0.1).name('quique')
+    f.add(params, 'maxSpeed', 2, 30, 0.5).name('top speed')
+    f.add(params, 'acceleration', 1, 20, 0.5).name('acceleration')
+    f.add(params, 'accelCurve', 0.5, 6, 0.1).name('acceleration curve')
+    f.add(params, 'throttleResponse', 0, 2, 0.05).name('throttle response (s)')
+    f.add(params, 'turnSpeed', 0.5, 6, 0.1).name('turn rate')
+    f.add(params, 'steerResponse', 0, 1.5, 0.05).name('steering weight (s)')
+    f.add(params, 'steerReturn', 0, 1, 0.05).name('steering return (s)')
+    f.add(params, 'turnInertia', 0, 0.6, 0.01).name('turn inertia (s)')
+    f.add(params, 'lean', 0, 3, 0.1).name('body lean')
+    f.add(params, 'bounciness', 0, 1.5, 0.05).name('bump restitution')
+    f.add(params, 'wallBounce', 0, 1.2, 0.05).name('wall restitution')
+    f.add(params, 'knockDrag', 0.5, 10, 0.1).name('knockback friction')
+    f.add(params, 'hop', 0, 3, 0.1).name('bounce')
   }
 
   /** Uma cor por grupo de material do carro. */
@@ -181,7 +181,7 @@ export class ControlPanel {
   /** Atualiza o painel depois de mudar cores por código (ex.: nova pintura). */
   showLivery(name) {
     this.materialsFolder.controllers.forEach((c) => c.updateDisplay())
-    this.liveryButton.name(`Sortear pintura (atual: ${name})`)
+    this.liveryButton.name(`Random livery (current: ${name})`)
   }
 
   /** Mostra/esconde o painel (F2). */
@@ -220,11 +220,11 @@ export class ControlPanel {
         body: JSON.stringify(this.gui.save()),
       })
       if (!res.ok) throw new Error(await res.text())
-      button.name('Salvo ✓')
+      button.name('Saved ✓')
     } catch (err) {
       console.error('Não foi possível salvar as configurações:', err)
-      button.name('Erro ao salvar (veja o console)')
+      button.name('Save failed (see console)')
     }
-    setTimeout(() => button.name('Salvar configurações'), 2000)
+    setTimeout(() => button.name('Save settings'), 2000)
   }
 }

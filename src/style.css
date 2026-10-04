@@ -767,3 +767,313 @@ body.in-menu .car-tags {
   background: #fff4c2;
   transition: width 0.5s cubic-bezier(0.5, 0, 0.75, 0) 0.4s;
 }
+
+/* --- Ultimate ----------------------------------------------------------------- */
+.hit-popup.zap {
+  font-size: 30px;
+  color: #fff27a;
+}
+
+.hit-popup.stun {
+  font-size: 40px;
+  color: #ffd21f;
+}
+
+.car-tag-name.powered {
+  color: #000;
+  background: #ffd21f;
+  animation: tag-zap 0.3s ease-in-out infinite alternate;
+}
+
+@keyframes tag-zap {
+  to { box-shadow: 2px 2px 0 #000, 0 0 14px #ffd21f; }
+}
+
+.ult-banner {
+  position: fixed;
+  left: 50%;
+  top: 22px;
+  translate: -50% 0;
+  min-width: 260px;
+  padding: 8px 22px 10px;
+  text-align: center;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.82);
+  border: 3px solid #000;
+  border-radius: 12px;
+  box-shadow: 4px 4px 0 #000;
+  pointer-events: none;
+  z-index: 8;
+  animation: card-in 0.3s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+
+.ult-banner[hidden],
+body.in-menu .ult-banner {
+  display: none;
+}
+
+.ult-banner .ult-title {
+  font-size: 24px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.04em;
+  -webkit-text-stroke: 1px #000;
+  text-shadow: 2px 2px 0 #000;
+}
+
+.ult-banner .ult-sub {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  opacity: 0.8;
+}
+
+.ult-banner .ult-sub:empty {
+  display: none;
+}
+
+.ult-banner.warn .ult-title {
+  color: #ffd21f;
+}
+
+.ult-banner.go {
+  background: #ffd21f;
+  color: #000;
+  animation: card-in 0.3s cubic-bezier(0.2, 1.4, 0.4, 1), ult-pulse 0.5s ease-in-out infinite alternate;
+}
+
+.ult-banner.go .ult-title {
+  color: #000;
+  -webkit-text-stroke: 0;
+  text-shadow: none;
+}
+
+.ult-banner.mine {
+  border-color: #ffd21f;
+  box-shadow: 4px 4px 0 #000, 0 0 24px #ffd21f;
+}
+
+.ult-banner.mine .ult-title {
+  color: #ffd21f;
+}
+
+.ult-banner.enemy .ult-title {
+  color: #ff6b6b;
+}
+
+@keyframes ult-pulse {
+  to { scale: 1.06; }
+}
+
+/* Atordoado: a barra de vida pisca amarelo */
+.health-hud.stunned .hp-frame {
+  border-color: #ffd21f;
+}
+
+/* Vaga do ultimate, ao lado dos boosts */
+.player-hud .ult-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  margin-left: 6px;
+  padding: 0 12px 0 6px;
+  border: 3px solid #000;
+  border-radius: 999px;
+  background: rgba(10, 12, 18, 0.65);
+  box-shadow: 2px 2px 0 #000;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+}
+
+.player-hud .ult-icon {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  font-size: 14px;
+  background: #2b3445;
+}
+
+.player-hud .ult-slot.empty {
+  opacity: 0.55;
+}
+
+.player-hud .ult-slot.stored .ult-icon {
+  background: #8a7414;
+}
+
+.player-hud .ult-slot.ready {
+  color: #000;
+  background: #ffd21f;
+  animation: ult-ready 0.6s ease-in-out infinite alternate;
+}
+
+.player-hud .ult-slot.ready .ult-icon,
+.player-hud .ult-slot.active .ult-icon {
+  background: #fff;
+}
+
+.player-hud .ult-slot.active {
+  color: #ffd21f;
+  border-color: #ffd21f;
+  box-shadow: 2px 2px 0 #000, 0 0 16px #ffd21f;
+}
+
+@keyframes ult-ready {
+  to { box-shadow: 2px 2px 0 #000, 0 0 16px #ffd21f; }
+}
+
+/* Guardado prestes a se perder */
+.player-hud .ult-slot.expiring {
+  animation: ult-expiring 0.35s steps(2) infinite;
+}
+
+@keyframes ult-expiring {
+  50% { background: #ff3d3d; color: #fff; }
+}
+
+/* --- Campo de testes ----------------------------------------------------------- */
+.test-panel {
+  position: fixed;
+  right: 20px;
+  top: 110px;
+  width: 210px;
+  max-height: calc(100vh - 130px);
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.82);
+  border: 3px solid #000;
+  border-radius: 12px;
+  box-shadow: 4px 4px 0 #000;
+  z-index: 12;
+}
+
+body.in-menu .test-panel {
+  display: none;
+}
+
+.test-panel h2 {
+  font-size: 15px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #ffd23f;
+}
+
+.test-panel .test-section {
+  display: grid;
+  gap: 6px;
+}
+
+.test-panel h3 {
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.test-panel button {
+  padding: 7px 10px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 800;
+  text-align: left;
+  color: #fff;
+  background: #2b3445;
+  border: 2px solid #000;
+  border-radius: 7px;
+  box-shadow: 2px 2px 0 #000;
+  cursor: pointer;
+}
+
+.test-panel button:hover {
+  background: #36415a;
+}
+
+.test-panel button:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.test-panel button.ult {
+  color: #000;
+  background: #ffd21f;
+}
+
+.test-panel button.exit {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.test-panel .test-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hit-popup.blast {
+  font-size: 50px;
+  color: #ff8a2a;
+}
+
+/* --- Cápsula de vida ------------------------------------------------------------ */
+.hit-popup.heal {
+  font-size: 36px;
+  color: #4cd964;
+}
+
+.ult-banner.heal {
+  border-color: #ff3d55;
+  box-shadow: 4px 4px 0 #000, 0 0 20px #ff3d55;
+}
+
+.ult-banner.heal .ult-title {
+  color: #ff6b7d;
+}
+
+.test-panel button.heal {
+  color: #fff;
+  background: #c81e34;
+}
+
+/* Ultimate na mão: boost travado (bolinhas apagadas com cadeado) */
+.player-hud.boost-locked .slot {
+  position: relative;
+  filter: grayscale(1) brightness(0.55);
+}
+
+.player-hud.boost-locked .slot::after {
+  content: '🔒';
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  filter: none;
+}
+
+.player-hud.boost-locked .hint {
+  color: #ffd21f;
+  opacity: 1;
+}
+
+/* Dentro da zona de cura: barra de vida brilhando */
+.health-hud.healing .hp-frame {
+  border-color: #4cd964;
+  box-shadow: 4px 4px 0 #000, 0 0 18px #4cd964;
+}

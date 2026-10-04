@@ -12,8 +12,14 @@ import { seededRandom } from './random.js'
 // lugar depois de RESPAWN_DELAY.
 
 const PICKUP_RADIUS = 1.9 // m do centro do carrinho
-const RESPAWN_DELAY = 9   // s (boost forte: esferas mais raras)
+const RESPAWN_DELAY = 12  // s (boost forte: esferas mais raras; ~4 boosts por jogador por minuto)
 const FLOAT_HEIGHT = 1.4
+
+// Esferas no mapa: acompanham o número de jogadores, com teto para o mapa
+// não lotar (2 + metade dos jogadores, entre 3 e 6)
+const ORB_MIN = 3
+const ORB_MAX = 6
+export const orbCountFor = (players) => Math.min(ORB_MAX, Math.max(ORB_MIN, Math.round(2 + players / 2)))
 
 export class Orbs {
   /**
@@ -35,17 +41,28 @@ export class Orbs {
     this.anchorRange = anchorRange
     this.time = 0
 
-    const geometry = new THREE.IcosahedronGeometry(0.6, 2)
+    this.scene = scene
+    this.geometry = new THREE.IcosahedronGeometry(0.6, 2)
     this.material = createToonMaterial({ color: '#9ff6ff', emissive: '#2a9fd6', glossiness: 10 })
+    this.slots = []
+    this.setCount(count)
+  }
 
-    this.slots = Array.from({ length: count }, (_, i) => {
-      const mesh = new THREE.Mesh(geometry, this.material)
+  /**
+   * Quantas esferas ficam no mapa (acompanha o número de jogadores). Slots a
+   * mais não são apagados, só "adormecem" (invisíveis e sem poder ser pegos):
+   * se voltarem, a geração deles continua batendo com a dos outros jogadores.
+   */
+  setCount(count) {
+    this.count = count
+    while (this.slots.length < count) {
+      const mesh = new THREE.Mesh(this.geometry, this.material)
       mesh.castShadow = true
-      scene.add(mesh)
-      const slot = { index: i, gen: 0, readyAt: 0, mesh }
+      this.scene.add(mesh)
+      const slot = { index: this.slots.length, gen: 0, readyAt: 0, mesh }
       this.place(slot)
-      return slot
-    })
+      this.slots.push(slot)
+    }
   }
 
   // Posição determinística do slot na geração atual
@@ -83,7 +100,7 @@ export class Orbs {
   }
 
   isActive(slot) {
-    return this.time >= slot.readyAt
+    return slot.index < this.count && this.time >= slot.readyAt
   }
 
   update(dt) {

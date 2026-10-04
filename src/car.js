@@ -312,6 +312,15 @@ export class Car {
     return -into
   }
 
+  /** Para na hora (ex.: lançando a Onda de choque). Batidas ainda empurram. */
+  halt() {
+    this.speed = 0
+    this.pedal = 0
+    this.knock.set(0, 0, 0)
+    this.velocity.set(0, 0, 0)
+    this.endBoost()
+  }
+
   /** Soma uma variação de velocidade (m/s, mundo) vinda de uma batida. */
   applyImpulse(impulse) {
     this.velocity.add(impulse)

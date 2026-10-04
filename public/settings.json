@@ -1,131 +1,131 @@
 {
   "controllers": {},
   "folders": {
-    "Carrinho": {
+    "Car": {
       "controllers": {
-        "velocidade máx.": 10,
-        "aceleração": 5,
-        "curva de aceleração": 1.5,
-        "resposta do pedal (s)": 0.6,
-        "giro": 2.2,
-        "peso do volante (s)": 0.4,
-        "volta do volante (s)": 0.25,
-        "inércia do giro (s)": 0.15,
-        "inclinação": 1,
-        "elasticidade da batida": 0.95,
-        "elasticidade da parede": 0.6,
-        "freio do empurrão": 2.2,
-        "quique": 1.2
+        "top speed": 10,
+        "acceleration": 5,
+        "acceleration curve": 1.5,
+        "throttle response (s)": 0.6,
+        "turn rate": 2.2,
+        "steering weight (s)": 0.4,
+        "steering return (s)": 0.25,
+        "turn inertia (s)": 0.15,
+        "body lean": 1,
+        "bump restitution": 0.95,
+        "wall restitution": 0.6,
+        "knockback friction": 2.2,
+        "bounce": 1.2
       },
       "folders": {}
     },
-    "Materiais do carrinho": {
+    "Car materials": {
       "controllers": {
-        "Carroceria (principal)": "#3a3dce",
-        "Carroceria (secundária)": "#a066e8",
-        "Metal e detalhes": "#0000ff",
-        "Borracha e assento": "#2a2a30"
+        "Body (primary)": "#3a3dce",
+        "Body (secondary)": "#a066e8",
+        "Metal & trim": "#0000ff",
+        "Rubber & seat": "#2a2a30"
       },
       "folders": {}
     },
-    "Dano (força em m/s)": {
+    "Damage (impact in m/s)": {
       "controllers": {
-        "mínimo para dar dano": 2.5,
-        "FORTE a partir de": 6,
-        "PANCADA a partir de": 8.5
+        "min. impact for damage": 2.5,
+        "HEAVY from": 6,
+        "CRITICAL from": 8.5
       },
       "folders": {}
     },
-    "Câmera": {
+    "Camera": {
       "controllers": {
-        "inclinação (°)": 45,
-        "rotação (°)": 180,
-        "campo de visão": 35,
-        "distância mínima": 22,
-        "distância máxima": 90,
-        "margem (m)": 4,
-        "antecipação (s)": 0.5,
-        "suavidade (inv.)": 3
+        "pitch (°)": 45,
+        "yaw (°)": 180,
+        "field of view": 35,
+        "min. distance": 22,
+        "max. distance": 90,
+        "margin (m)": 4,
+        "look-ahead (s)": 0.5,
+        "smoothing (inv.)": 3
       },
       "folders": {}
     },
-    "Chão": {
+    "Floor": {
       "controllers": {
-        "cor": "#004852",
-        "grade": 0.12,
-        "tamanho do quadrado": 2,
-        "cor da mureta": "#e8463c"
+        "color": "#004852",
+        "grid": 0.12,
+        "tile size": 2,
+        "wall color": "#e8463c"
       },
       "folders": {}
     },
-    "Bastões": {
+    "Spiked posts": {
       "controllers": {
-        "cor da madeira": "#e8463c",
-        "cor dos espinhos": "#ffffff"
+        "wood color": "#e8463c",
+        "spike color": "#ffffff"
       },
       "folders": {}
     },
-    "Faíscas": {
+    "Sparks": {
       "controllers": {
-        "ativar": true,
-        "quantidade": 1,
-        "arcos elétricos": 1,
-        "espessura (px)": 1.5,
-        "cor": "#ffd21f"
+        "enabled": true,
+        "amount": 1,
+        "electric arcs": 1,
+        "thickness (px)": 1.5,
+        "color": "#ffd21f"
       },
       "folders": {}
     },
-    "Fundo": {
+    "Background": {
       "controllers": {
-        "cor do centro": "#5b6b8c",
-        "cor da borda": "#05060a",
-        "raio": 0.75
+        "center color": "#5b6b8c",
+        "edge color": "#05060a",
+        "radius": 0.75
       },
       "folders": {}
     },
-    "Sombreamento": {
+    "Shading": {
       "controllers": {
-        "limite luz/sombra": 0,
-        "suavidade da faixa": 0.03,
-        "tom da sombra": "#5a6aa8",
-        "ambiente": 0.25
+        "light/shadow threshold": 0,
+        "band softness": 0.03,
+        "shadow tint": "#5a6aa8",
+        "ambient": 0.25
       },
       "folders": {}
     },
     "Rim light": {
       "controllers": {
-        "intensidade": 0.9,
-        "espessura (inv.)": 0.64
+        "intensity": 0.9,
+        "thickness (inv.)": 0.64
       },
       "folders": {}
     },
-    "Retícula (quadrinhos)": {
+    "Halftone (comic)": {
       "controllers": {
-        "ativar": false,
-        "espaçamento (px)": 3,
-        "tamanho máximo": 0.9,
-        "ângulo da grade": 47,
-        "início da sombra densa": 0,
-        "tom azulado": 0,
-        "cor da tinta": "#000000"
+        "enabled": false,
+        "spacing (px)": 3,
+        "max. size": 0.9,
+        "grid angle": 47,
+        "deep shadow start": 0,
+        "blue tint": 0,
+        "ink color": "#000000"
       },
       "folders": {}
     },
-    "Contorno": {
+    "Outline": {
       "controllers": {
-        "espessura (px)": 1.4,
-        "suavização (FXAA)": true,
-        "sensibilidade (prof.)": 0.001,
-        "linhas em dobras": false,
-        "limite das dobras": 0.6,
-        "cor": "#000000"
+        "thickness (px)": 1.4,
+        "anti-aliasing (FXAA)": true,
+        "depth sensitivity": 0.001,
+        "crease lines": false,
+        "crease threshold": 0.6,
+        "color": "#000000"
       },
       "folders": {}
     },
-    "Sol": {
+    "Sun": {
       "controllers": {
-        "azimute": 286,
-        "elevação": 50
+        "azimuth": 286,
+        "elevation": 50
       },
       "folders": {}
     }

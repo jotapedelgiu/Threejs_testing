@@ -32,6 +32,9 @@ function listen(action, validate, handler) {
  *   onBat: (bat: { index: number, dx: number, dz: number, strength: number, damage: number }, peerId: string) => void,
  *   onHello: (hello: { name: string, since: number, phase: 'lobby' | 'playing' }, peerId: string) => void,
  *   onStart: (start: { seed: string, since: number }, peerId: string) => void,
+ *   onUlt: (state: { n: number, phase: string, kind: string | null, left: number, given: object | null }, peerId: string) => void,
+ *   onUltReq: (req: { n: number, op: 'claim' }, peerId: string) => void,
+ *   onMedkit: (state: { v: number, zones: { id: number, x: number, z: number, left: number }[] }, peerId: string) => void,
  * }} handlers
  */
 export function joinArena(roomId, handlers) {
@@ -51,6 +54,11 @@ export function joinArena(roomId, handlers) {
   // Sala de espera: nome/situação de cada um, e o anfitrião começando a partida
   const helloAction = room.makeAction('hello')
   const startAction = room.makeAction('start')
+  // Ultimate: estado (do anfitrião) e pedidos ao anfitrião
+  const ultAction = room.makeAction('ult')
+  const ultReqAction = room.makeAction('ultreq')
+  // Zona de cura: estado (do anfitrião)
+  const medkitAction = room.makeAction('medkit')
   const peers = new Set()
 
   room.onPeerJoin = (peerId) => {
@@ -71,6 +79,9 @@ export function joinArena(roomId, handlers) {
   listen(batAction, validators.bat, handlers.onBat)
   listen(helloAction, validators.hello, handlers.onHello)
   listen(startAction, validators.start, handlers.onStart)
+  listen(ultAction, validators.ult, handlers.onUlt)
+  listen(ultReqAction, validators.ultreq, handlers.onUltReq)
+  listen(medkitAction, validators.medkit, handlers.onMedkit)
 
   // Sai da sala ao fechar a aba, para os outros removerem o carrinho na hora
   window.addEventListener('beforeunload', () => room.leave())
@@ -96,5 +107,11 @@ export function joinArena(roomId, handlers) {
     sendHello: (hello, peerId) => (peerId ? helloAction.send(hello, { target: peerId }) : broadcast(helloAction)(hello)),
     /** Anfitrião: começa a partida para todos com o mapa `start`. */
     sendStart: broadcast(startAction),
+    /** Anfitrião: estado do ultimate, para todos ou só para `peerId`. */
+    sendUlt: (state, peerId) => (peerId ? ultAction.send(state, { target: peerId }) : broadcast(ultAction)(state)),
+    /** Pedido ao anfitrião (vai para todos; só ele responde). */
+    sendUltReq: broadcast(ultReqAction),
+    /** Anfitrião: estado da zona de cura, para todos ou só para `peerId`. */
+    sendMedkit: (state, peerId) => (peerId ? medkitAction.send(state, { target: peerId }) : broadcast(medkitAction)(state)),
   }
 }
