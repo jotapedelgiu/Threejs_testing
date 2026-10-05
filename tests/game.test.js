@@ -294,7 +294,7 @@ describe('Esferas', () => {
   })
 
   test('quantidade acompanha os jogadores, com teto', () => {
-    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 12].map(orbCountFor), [3, 3, 4, 4, 5, 5, 6, 6, 6])
+    assert.deepEqual([1, 2, 3, 4, 5, 6, 7, 8, 12].map(orbCountFor), [3, 4, 4, 5, 6, 7, 7, 8, 9])
   })
 
   test('menos jogadores: esferas a mais adormecem e voltam com a mesma geração', () => {

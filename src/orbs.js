@@ -12,14 +12,15 @@ import { seededRandom } from './random.js'
 // lugar depois de RESPAWN_DELAY.
 
 const PICKUP_RADIUS = 1.9 // m do centro do carrinho
-const RESPAWN_DELAY = 12  // s (boost forte: esferas mais raras; ~4 boosts por jogador por minuto)
+const RESPAWN_DELAY = 12  // s (boost forte: esferas mais raras; ~5 boosts por jogador por minuto com 8 carros)
 const FLOAT_HEIGHT = 1.4
 
 // Esferas no mapa: acompanham o número de jogadores, com teto para o mapa
-// não lotar (2 + metade dos jogadores, entre 3 e 6)
+// não lotar (2 + 3/4 dos jogadores, entre 3 e 9): numa partida de 8 carros,
+// com os bots, são 8 esferas
 const ORB_MIN = 3
-const ORB_MAX = 6
-export const orbCountFor = (players) => Math.min(ORB_MAX, Math.max(ORB_MIN, Math.round(2 + players / 2)))
+const ORB_MAX = 9
+export const orbCountFor = (players) => Math.min(ORB_MAX, Math.max(ORB_MIN, Math.round(2 + players * 0.75)))
 
 export class Orbs {
   /**
