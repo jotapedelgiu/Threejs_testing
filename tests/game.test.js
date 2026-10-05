@@ -22,6 +22,7 @@ import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } fr
 import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME } from '../src/ultimate.js'
 import { levelFor, damageToLevelUp, damageScale, scaleDamage, maxHealthFor, MAX_LEVEL, xpForHit, xpForKill, repeatScale, XP_EXTRA } from '../src/progression.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
+import { BotBrain, headingTo, pathClear } from '../src/bots.js'
 import { KillTracker, KILL_CREDIT, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock, newKills, MATCH_TIME } from '../src/match.js'
 
 const DT = 1 / 60
@@ -210,6 +211,22 @@ describe('Protocolo de rede', () => {
     assert.equal(validators.state({ ...state, hp: '<b>9</b>' }).hp, 0)
     assert.equal(validators.wall({ damage: 999 }), null)
     assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: DAMAGE.turbo }).damage, DAMAGE.turbo)
+  })
+
+  test('bots: lista do anfitrião com estado de cada um; bot inválido derruba a mensagem', () => {
+    const out = validators.bots({ list: [{ id: 'bot-1', name: '  Bot   Pneu ', kind: 'hard', state }] })
+    assert.equal(out.list[0].name, 'Bot Pneu')
+    assert.equal(out.list[0].state.x, 2)
+    assert.equal(validators.bots({ list: [{ id: 'player-1', name: 'x', kind: 'hard', state }] }), null) // não é bot
+    assert.equal(validators.bots({ list: [{ id: 'bot-1', name: 'x', kind: 'god', state }] }), null)
+    assert.equal(validators.bots({ list: [{ id: 'bot-1', name: 'x', kind: 'easy', state: { ...state, x: NaN } }] }), null)
+    assert.equal(validators.bots({ list: Array(9).fill({ id: 'bot-1', name: 'x', kind: 'easy', state }) }), null)
+  })
+
+  test('hit.by: só id de bot (ninguém se passa por outro jogador)', () => {
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5, by: 'bot-2' }).by, 'bot-2')
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5, by: 'someone' }).by, null)
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5 }).by, null)
   })
 })
 
@@ -1153,5 +1170,152 @@ describe('Progressão (níveis)', () => {
     const max = maxHealthFor(3)
     for (let t = 0; t < 8; t += 1 / 60) hp += z.update(1 / 60, hp, max)
     assert.ok(hp > 100 && hp <= max)
+  })
+})
+
+describe('Bots (campo de testes)', () => {
+  const world = (extra = {}) => ({
+    enemies: [], orbs: [], heal: [], obstacles: [],
+    halfX: 45, halfZ: 27.5, maxBoosts: 2, maxSpeed: 10, ...extra,
+  })
+  const enemy = (id, x, z, hp = 100) => ({ id, x, z, vx: 0, vz: 0, hp, maxHp: 100 })
+  const me = (extra = {}) => ({ x: 0, z: 0, yaw: 0, yawRate: 0, speed: 8, hp: 100, maxHp: 100, boosts: 0, boosting: false, ...extra })
+  // random fixo: mira sem erro sorteado (0,5 → offset 0)
+  const brain = (kind = 'hard') => new BotBrain(kind, () => 0.5)
+  // Simula um carro de verdade dirigido pelo bot
+  const drive = (b, car, w, seconds) => {
+    for (let t = 0; t < seconds; t += DT) {
+      const p = car.root.position
+      const self = { x: p.x, z: p.z, yaw: car.yaw, yawRate: car.yawRate, speed: car.velocity.length(), hp: 100, maxHp: 100, boosts: 0, boosting: false }
+      car.update(DT, b.think(DT, self, w))
+    }
+  }
+
+  test('headingTo segue a frente do carro (sin, cos)', () => {
+    assert.ok(Math.abs(headingTo(0, 0, 0, 5)) < 1e-9)
+    assert.ok(Math.abs(headingTo(0, 0, 5, 0) - Math.PI / 2) < 1e-9)
+  })
+
+  test('escolhe o inimigo mais perto e ignora nocauteado/protegido', () => {
+    const b = brain()
+    const w = world({ enemies: [{ ...enemy('ko', 0, 3), ko: true }, { ...enemy('sh', 0, 4), shield: true }, enemy('far', 0, 30), enemy('near', 0, 10)] })
+    b.think(DT, me(), w)
+    assert.equal(b.targetId, 'near')
+    assert.equal(b.mode, 'chase')
+  })
+
+  test('mantém o alvo atual a não ser que outro seja bem melhor', () => {
+    const b = brain()
+    b.think(DT, me(), world({ enemies: [enemy('a', 0, 10)] }))
+    b.thinkTimer = 0
+    b.think(DT, me(), world({ enemies: [enemy('a', 0, 10), enemy('b', 0, 8)] }))
+    assert.equal(b.targetId, 'a') // 2 m mais perto não basta
+    b.thinkTimer = 0
+    b.think(DT, me(), world({ enemies: [enemy('a', 0, 10), enemy('b', 0, 2)] }))
+    assert.equal(b.targetId, 'b')
+  })
+
+  test('prefere alvo com pouca vida (garantir o abate)', () => {
+    const b = brain('hard')
+    b.think(DT, me(), world({ enemies: [enemy('full', 0, 10, 100), enemy('low', 0, 14, 10)] }))
+    assert.equal(b.targetId, 'low')
+  })
+
+  test('vira para o lado do alvo', () => {
+    const left = brain().think(DT, me(), world({ enemies: [enemy('e', 10, 0)] })) // +x: yaw aumenta
+    assert.ok(left.steer > 0.5)
+    const right = brain().think(DT, me(), world({ enemies: [enemy('e', -10, 0)] }))
+    assert.ok(right.steer < -0.5)
+  })
+
+  test('desvia de um bastão no caminho', () => {
+    const w = world({ enemies: [enemy('e', 0, 15)], obstacles: [{ a: [0, 3], b: [0, 3], r: 0.7 }] })
+    const out = brain().think(DT, me(), w)
+    assert.ok(Math.abs(out.steer) > 0.3)
+    assert.ok(!pathClear(0, 0, 0, 5, w))
+    assert.ok(pathClear(0, 0, 0.7, 5, w))
+  })
+
+  test('vida baixa: vai para a zona de cura e para dentro dela', () => {
+    const b = brain('normal')
+    const w = world({ enemies: [enemy('e', 0, 5)], heal: [{ x: -15, z: 0, radius: 4 }] })
+    const out = b.think(DT, me({ hp: 20 }), w)
+    assert.equal(b.mode, 'retreat')
+    assert.ok(out.steer < -0.5) // a zona está em -x
+    assert.equal(b.think(DT, me({ x: -15, hp: 20 }), w).throttle, 0)
+    // Curou: volta para a briga
+    b.think(DT, me({ x: -15, hp: 90 }), w)
+    assert.equal(b.mode, 'chase')
+  })
+
+  test('o fácil não recua', () => {
+    const b = brain('easy')
+    b.think(DT, me({ hp: 10 }), world({ enemies: [enemy('e', 0, 5)], heal: [{ x: -15, z: 0, radius: 4 }] }))
+    assert.equal(b.mode, 'chase')
+  })
+
+  test('pega esfera de boost perto no caminho', () => {
+    const b = brain()
+    b.think(DT, me(), world({ enemies: [enemy('e', 0, 30)], orbs: [{ x: 3, z: 3 }] }))
+    assert.equal(b.mode, 'orb')
+    b.think(DT, me({ boosts: 2 }), world({ enemies: [enemy('e', 0, 30)], orbs: [{ x: 3, z: 3 }] }))
+    assert.equal(b.mode, 'chase') // estoque cheio: ignora
+  })
+
+  test('usa o boost com o alvo alinhado e no alcance', () => {
+    const w = world({ enemies: [enemy('e', 0, 8, 20)] })
+    assert.ok(brain('normal').think(DT, me({ boosts: 1 }), w).boost)
+    assert.ok(!brain('normal').think(DT, me({ boosts: 0 }), w).boost)
+    assert.ok(!brain('normal').think(DT, me({ boosts: 1 }), world({ enemies: [enemy('e', 0, 30)] })).boost) // longe
+    assert.ok(!brain('normal').think(DT, me({ boosts: 1, yaw: 1 }), w).boost) // fora da mira
+  })
+
+  test('o difícil guarda o boost para o combo com a mureta', () => {
+    const middle = world({ enemies: [enemy('e', 0, 8)] })
+    assert.ok(!brain('hard').think(DT, me({ boosts: 1 }), middle).boost)
+    const nearWall = world({ enemies: [enemy('e', 0, 22)] })
+    assert.ok(brain('hard').think(DT, me({ z: 14, boosts: 1 }), nearWall).boost)
+  })
+
+  test('colado no alvo e parado: dá ré para pegar embalo', () => {
+    const b = brain()
+    b.think(DT, me({ speed: 0.5 }), world({ enemies: [enemy('e', 0, 2.5)] }))
+    assert.equal(b.think(DT, me({ speed: 0.5 }), world({ enemies: [enemy('e', 0, 2.5)] })).throttle, -1)
+  })
+
+  test('preso (acelerando sem sair do lugar): dá ré', () => {
+    const b = brain()
+    const w = world({ enemies: [enemy('e', 0, 20)] })
+    let out
+    for (let t = 0; t < 1.2; t += DT) out = b.think(DT, me({ speed: 0 }), w)
+    assert.equal(out.throttle, -1)
+  })
+
+  test('dirigindo o carro de verdade, alcança o alvo atrás dele', () => {
+    const car = makeCar()
+    car.yaw = Math.PI // de costas para o alvo
+    car.root.rotation.y = car.yaw
+    const w = world({ enemies: [enemy('e', 6, 18)] })
+    let closest = Infinity
+    const b = brain('normal')
+    for (let t = 0; t < 6; t += DT) {
+      drive(b, car, w, DT)
+      closest = Math.min(closest, Math.hypot(car.root.position.x - 6, car.root.position.z - 18))
+    }
+    assert.ok(closest < 2, `chegou a ${closest.toFixed(1)} m`)
+  })
+
+  test('dirigindo, contorna um bastão no meio do caminho sem encostar', () => {
+    const car = makeCar()
+    const bat = { a: [0, 8], b: [0, 8], r: 0.7 }
+    const w = world({ enemies: [enemy('e', 0, 20)], obstacles: [bat] })
+    let closestBat = Infinity
+    const b = brain('hard')
+    for (let t = 0; t < 4; t += DT) {
+      drive(b, car, w, DT)
+      closestBat = Math.min(closestBat, Math.hypot(car.root.position.x, car.root.position.z - 8))
+    }
+    assert.ok(closestBat > 1.2, `passou a ${closestBat.toFixed(2)} m do bastão`)
+    assert.ok(car.root.position.z > 12)
   })
 })

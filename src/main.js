@@ -31,6 +31,7 @@ import { UltimateView } from './ultimateView.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, maxZonesFor } from './medkit.js'
 import { MedkitView } from './medkitView.js'
 import { TrainingDummy, TestPanel, localNet, DUMMY_SPOTS, TEST_SPAWN } from './testRange.js'
+import { BotBrain, BOT_SKILLS, BOT_KINDS, BOT_NAMES } from './bots.js'
 import {
   judgeHit, impactTier, tierOfDamage, DAMAGE, MIN_IMPULSE, HitCooldown, Health, MAX_HEALTH,
   BOOST_PUSH, WALL_DAMAGE, WALL_DAMAGE_WINDOW, WALL_DAMAGE_MIN_SPEED, SPIKE_MIN_SPEED,
@@ -73,6 +74,9 @@ const SPAWN_INSET_X = 6       // m dos cantos até a mureta
 const SPAWN_INSET_Z = 5
 const SPAWN_CLEAR = 7         // m livres em volta dos cantos (bastões e pneus não ficam ali)
 const NO_INPUT = { throttle: 0, steer: 0 }
+// Bots em toda partida online (bots.js): o anfitrião simula e manda o estado
+// deles para a sala. Uma dificuldade por bot
+const MATCH_BOTS = ['easy', 'normal', 'normal', 'hard']
 
 const savedSettings = fetch(SETTINGS_URL, { cache: 'no-store' })
   .then((r) => (r.ok ? r.json() : null))
@@ -154,7 +158,7 @@ const orbs = new Orbs(scene, {
 
 // Esferas conforme quantos estão na sala (eu + os outros): todos contam igual
 function updateOrbCount() {
-  orbs.setCount(orbCountFor(1 + roster.size))
+  orbs.setCount(orbCountFor(1 + roster.size + (testMode ? 0 : MATCH_BOTS.length)))
 }
 
 // Troca para o mapa de outro jogador (o dele é mais antigo)
@@ -505,6 +509,7 @@ function beginMatch(map, late = false) {
     p.xpBy = {}
     p.deaths = 0
   }
+  if (!testMode) clearMatchBots() // os da partida anterior saem
   for (const d of dummies.values()) {
     d.kills.reset()
     d.revive()
@@ -530,6 +535,8 @@ function beginMatch(map, late = false) {
     for (const [id, r] of roster) if (r.phase === 'lobby' || r.phase === 'playing') members.push({ id, since: r.since })
     spawnAt(corners[cornerIndex(members, net.selfId)])
   }
+  // Bots: quem cria é o anfitrião; nascem longe dos cantos (onde estão os jogadores)
+  if (!testMode && !late && amHost()) MATCH_BOTS.forEach((kind, i) => addBot(kind, `bot-${i + 1}`, corners))
   presence.scale = 0 // aparece com "pop"
   net.sendHello(hello()) // agora estou jogando
 }
@@ -606,7 +613,12 @@ function startMultiplayer() {
       updateOrbCount()
     },
     onPeerState: handlePeerState,
-    onHit(hit, attackerId) {
+    onHit(hit, sender) {
+      // Batida de um bot: o anfitrião manda, mas quem bateu foi o bot
+      const attackerId = hit.by && sender === hostId() ? hit.by : sender
+      // Alguém acertou um bot que eu simulo (sou o anfitrião): aplico nele
+      const bot = dummies.get(hit.target)
+      if (bot && inMatch()) damageDummy(bot, hit, attackerId)
       // O dano aparece em cima de quem levou a batida, para todo mundo ver
       const position = positionOf(hit.target)
       if (hit.zap) {
@@ -623,6 +635,22 @@ function startMultiplayer() {
       }
       if (hit.target === net.selfId && inMatch()) receiveHit(hit, attackerId)
     },
+    // Bots da partida: o estado vem do anfitrião, como o de um jogador
+    onBots({ list }, peerId) {
+      if (!inMatch() || testMode || peerId !== hostId()) return
+      if (botsHost !== peerId) clearMatchBots() // anfitrião novo: relógio novo, histórico novo
+      botsHost = peerId
+      const ids = new Set(list.map((b) => b.id))
+      for (const id of netBots.keys()) {
+        if (ids.has(id)) continue
+        netBots.delete(id)
+        remotes?.remove(id)
+      }
+      for (const { id, name, kind, state } of list) {
+        netBots.set(id, { name, kind })
+        handlePeerState(id, state)
+      }
+    },
     // Alguém bateu na parede depois de levar um boost (o dano já foi
     // descontado por ele; aqui é só para mostrar)
     onWall(wall, peerId) {
@@ -630,6 +658,14 @@ function startMultiplayer() {
       if (wall.damage && position) scoreUI.popup(position, 'wall', wall.damage)
     },
   })
+
+  // Minhas batidas em bots que eu mesmo simulo (sou o anfitrião) não voltam
+  // pela rede: aplico aqui também
+  const sendHit = net.sendHit
+  net.sendHit = (hit) => {
+    sendHit(hit)
+    if (dummies.has(hit.target)) hitDummy(hit)
+  }
 
   exposeDebug()
 }
@@ -743,9 +779,10 @@ function collideCars(simTime, wallTime) {
     car.separate(hit.normal, hit.depth)
 
     const judged = judgeHit(hit.normal, car.velocity, remote.velocity)
+    const dummy = dummies.get(peerId) // boneco/bot que eu simulo (campo de testes ou anfitrião)
     if (judged.role === 'victim') {
-      const dummy = testMode && dummies.get(peerId)
-      if (dummy) dummyHitsMe(dummy, hit.normal, judged.impact, simTime)
+      // A força da batida é a dele vindo para cima de mim
+      if (dummy) dummyHitsMe(dummy, hit.normal, remote.velocity.dot(hit.normal), simTime)
       continue
     }
     const impulse = car.collisionImpulse(hit.normal, remote.velocity)
@@ -754,6 +791,8 @@ function collideCars(simTime, wallTime) {
     // Com boost: tira mais, arremessa mais longe e o boost acaba na batida
     const boosted = car.isBoosting
     car.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
+    // Empate com um bot: ele também ricocheteia (um jogador faria isso do lado dele)
+    if (judged.role === 'tie' && dummy?.isBot) dummy.car.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(-impulse))
     if (judged.role === 'tie' && !boosted) continue
     // Sem dano se eu estou nocauteado ou se o outro está fora/protegido
     const target = remotes.get(peerId)
@@ -805,6 +844,7 @@ function enterTestRange(name) {
   netStatus.textContent = 'Practice range · solo'
   new TestPanel({
     ultimates: ULT_KINDS.map((kind) => ({ kind, name: ULTIMATES[kind].name })),
+    bots: BOT_KINDS.map((kind) => ({ kind, label: BOT_SKILLS[kind].label })),
     onFreeToggle: (on) => (freeUltimate = on),
     actions: {
       giveUltimate(kind) {
@@ -817,6 +857,8 @@ function enterTestRange(name) {
         if (ultimate.phase !== 'available') ultimate.timer = Math.min(ultimate.timer, 0.01)
       },
       addDummy,
+      addBot,
+      removeBots,
       spawnMedkit() {
         // Perto de quem tem menos vida (eu ou um boneco)
         const players = playersWithHp()
@@ -844,12 +886,16 @@ function enterTestRange(name) {
 // Batida "mandada" para um boneco: aplica direto nele
 function hitDummy(hit) {
   const d = dummies.get(hit.target)
-  if (!d) return
-  const attacker = levelOf(net.selfId)
+  if (d) damageDummy(d, hit, net.selfId)
+}
+
+// Empurrão e dano num boneco/bot; o XP vai para `attackerId` (eu ou um bot)
+function damageDummy(d, hit, attackerId) {
+  const attacker = levelOf(attackerId)
   const victim = levelOf(d.id)
-  const repeat = repeatScale(d.kills.sinceKoBy(net.selfId, loop.simTime))
+  const repeat = repeatScale(d.kills.sinceKoBy(attackerId, loop.simTime))
   d.receive(
-    hit, loop.simTime, net.selfId,
+    hit, loop.simTime, attackerId,
     (dealt) => Math.round(xpForHit(dealt, attacker, victim) * repeat),
     Math.round(xpForKill(attacker, victim) * repeat),
   )
@@ -860,20 +906,219 @@ function addDummy() {
   const taken = (s) => [...dummies.values()].some((d) => d.spot === s)
   const spot = DUMMY_SPOTS.find((s) => !taken(s) && isFree(s.x, s.z))
   if (!spot) return
-  const n = dummies.size + 1
+  const n = [...dummies.values()].filter((d) => !d.isBot).length + 1
   // Física de carro de verdade (mesmos parâmetros do meu), sem modelo visível:
   // o desenho é o carro remoto, como o de qualquer jogador
   const body = new Car(new THREE.Object3D())
   body.params = car.params
-  const dummy = new TrainingDummy(`boneco-${n}`, n === 1 ? 'Training Dummy' : `Dummy ${n}`, body, spot)
+  const dummy = new TrainingDummy(`boneco-${++dummySerial}`, n === 1 ? 'Training Dummy' : `Dummy ${n}`, body, spot)
   dummies.set(dummy.id, dummy)
 }
+let dummySerial = 0 // ids únicos (bots saem e entram)
 
-// Bonecos: vida (volta do nocaute) e "estado pela rede" como um jogador
+// Bot novo (bots.js): nasce no ponto mais vazio, com pintura própria
+// `avoid`: pontos ocupados além dos carros (ex.: cantos no início da partida)
+function addBot(kind, id = `bot-${++dummySerial}`, avoid = []) {
+  if (!car) return null
+  const used = new Set([...dummies.values()].map((d) => d.botName))
+  const botName = BOT_NAMES.find((n) => !used.has(n)) ?? `${dummies.size + 1}`
+  const body = new Car(new THREE.Object3D())
+  body.params = car.params
+  const bot = new TrainingDummy(id, `Bot ${botName}`, body, { ...TEST_SPAWN, yaw: 0 })
+  bot.botName = botName
+  bot.brain = new BotBrain(kind)
+  const paint = pickLivery([livery?.name, ...(remotes?.liveries() ?? []), ...[...dummies.values()].map((d) => d.livery)])
+  bot.livery = paint.name
+  bot.colors = [paint.primary, paint.secondary]
+  dummies.set(bot.id, bot)
+  placeBot(bot, avoid)
+  return bot
+}
+
+// --- Bots nas partidas online -----------------------------------------------------
+// O anfitrião simula os bots (dummies, como no campo de testes) e manda o
+// estado deles 20x por segundo; os outros desenham como jogadores remotos e
+// mandam as batidas neles para o anfitrião. Se o anfitrião sai, o próximo
+// assume os bots de onde estavam (vida e placar incluídos).
+const netBots = new Map() // bots de outro anfitrião: id -> { name, kind }
+let botsHost = null       // de quem vêm os bots que estou vendo
+let botsTimer = 0
+
+function hostId() {
+  const members = [{ id: net.selfId, since: joinedAt }]
+  for (const [id, r] of roster) members.push({ id, since: r.since })
+  return hostOf(members)
+}
+
+// Tira todos os bots (os que eu simulo e os que vêm da rede)
+function clearMatchBots() {
+  removeBots()
+  for (const id of netBots.keys()) remotes?.remove(id)
+  netBots.clear()
+  botsHost = null
+}
+
+// Virei anfitrião com bots de outro na tela: passo a simular eles de onde estão
+function adoptBots() {
+  const seen = new Map([...netBots].map(([id, info]) => [id, { ...info, player: remotes.get(id) }]))
+  netBots.clear()
+  botsHost = null
+  for (const [id, { kind, player }] of seen) {
+    remotes.remove(id) // relógio de simulação novo (o meu): o desenho começa do zero
+    const bot = addBot(kind, id)
+    if (!bot || !player) continue
+    const pos = player.car.root.position
+    bot.car.spawn.set(pos.x, 0, pos.z)
+    bot.car.spawnYaw = player.car.yaw
+    bot.car.reset()
+    bot.health.hp = Math.max(1, player.hp)
+    Object.assign(bot.kills, { deaths: player.deaths ?? 0, koBy: { ...player.koBy }, asBy: { ...player.asBy }, xpBy: { ...player.xpBy } })
+  }
+}
+
+// Passo fixo (partida online): o anfitrião simula e manda os bots
+function updateMatchBots(dt, simTime, wallTime) {
+  const host = amHost()
+  if (host && !dummies.size && netBots.size) adoptBots()
+  if (!host && dummies.size) removeBots() // achei que era o anfitrião, mas não sou
+  if (!dummies.size) return
+  updateDummies(dt, simTime)
+  collideBotsWithPlayers(simTime, wallTime)
+  botsTimer += dt
+  if (botsTimer < NET_SEND_INTERVAL) return
+  botsTimer %= NET_SEND_INTERVAL
+  const list = []
+  for (const d of dummies.values()) if (d.isBot) list.push({ id: d.id, name: d.name, kind: d.brain.kind, state: d.state(simTime) })
+  net.sendBots({ list })
+}
+
+// Bot contra os outros jogadores (o meu carro já é tratado em collideCars).
+// Como um jogador faria do lado dele: o bot só resolve quando é ele quem bate
+// (manda o empurrão e o dano); se apanhou, o outro jogador manda a batida
+function collideBotsWithPlayers(simTime, wallTime) {
+  for (const [peerId, { car: remote, ko, shield }] of remotes.entries()) {
+    if (dummies.has(peerId) || !remote.hasState || ko) continue
+    remote.sample(wallTime)
+    for (const bot of dummies.values()) {
+      if (!bot.isBot || bot.health.isKO) continue
+      const c = bot.car
+      const hit = testCars(c.root.position, c.yaw, remote.root.position, remote.yaw, footprint)
+      if (!hit) continue
+      c.separate(hit.normal, hit.depth)
+      const judged = judgeHit(hit.normal, c.velocity, remote.velocity)
+      if (judged.role === 'victim') continue
+      const impulse = c.collisionImpulse(hit.normal, remote.velocity)
+      if (impulse < MIN_IMPULSE || !bot.hitCooldown.ready(peerId, simTime)) continue
+      const boosted = c.isBoosting
+      c.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
+      if (judged.role === 'tie' && !boosted) continue
+      const tier = boosted ? 'turbo' : impactTier(judged.impact)
+      const damage = shield || !tier ? 0 : scaleDamage(DAMAGE[tier], levelOf(bot.id))
+      const push = impulse * (boosted ? BOOST_PUSH : 1)
+      net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted, by: bot.id })
+      if (boosted) c.endBoost()
+      if (damage) scoreUI.popup(remote.root.position, tier, damage)
+    }
+  }
+}
+
+function removeBots() {
+  for (const d of [...dummies.values()]) {
+    if (!d.isBot) continue
+    dummies.delete(d.id)
+    remotes.remove(d.id)
+  }
+}
+
+// Bot (re)nasce no ponto mais vazio, longe de onde caiu (spawns.js)
+function placeBot(bot, avoid = []) {
+  const enemies = [...avoid]
+  if (!health.isKO) enemies.push({ x: car.root.position.x, z: car.root.position.z })
+  for (const d of dummies.values()) if (d !== bot && !d.health.isKO) enemies.push({ x: d.x, z: d.z })
+  for (const [id, p] of remotes.entries()) if (!dummies.has(id) && p.car.hasState && !p.ko) enemies.push({ x: p.car.root.position.x, z: p.car.root.position.z })
+  const point = chooseRespawn(spawnSpots, { enemies, death: bot.deathSpot, last: bot.spot }) ?? TEST_SPAWN
+  bot.spot = point
+  bot.car.spawn.set(point.x, 0, point.z)
+  bot.car.spawnYaw = yawToCenter(point.x, point.z)
+  bot.car.reset()
+}
+
+// O que os bots "enxergam" da arena (bots.js: BotWorld), montado uma vez por passo
+function botWorld() {
+  const tireRadius = tireWalls?.radius ?? 0.7
+  const tireHalf = Math.max(TIRE_HALF_LENGTH - tireRadius, 0)
+  const obstacles = batSpots.map((b) => ({ a: [b.x, b.z], b: [b.x, b.z], r: BAT_RADIUS }))
+  for (const w of tireSpots) {
+    const dx = Math.cos(w.yaw) * tireHalf, dz = -Math.sin(w.yaw) * tireHalf
+    obstacles.push({ a: [w.x - dx, w.z - dz], b: [w.x + dx, w.z + dz], r: tireRadius })
+  }
+  return {
+    orbs: orbs.slots.filter((slot) => orbs.isActive(slot)).map((slot) => slot.mesh.position),
+    heal: medkit.zones.map((z) => ({ x: z.x, z: z.z, radius: MEDKIT.radius })),
+    obstacles,
+    halfX: arena.halfX, halfZ: arena.halfZ,
+    maxBoosts: MAX_BOOSTS, maxSpeed: car.params.maxSpeed,
+  }
+}
+
+// Inimigos de um bot: eu, os outros jogadores e os outros bots (bonecos
+// parados não interessam)
+function botEnemies(bot) {
+  const enemies = [{
+    id: net.selfId, x: car.root.position.x, z: car.root.position.z, vx: car.velocity.x, vz: car.velocity.z,
+    hp: health.hp, maxHp: health.max, ko: health.isKO, shield: health.isShielded,
+  }]
+  for (const [id, p] of remotes.entries()) {
+    if (dummies.has(id) || !p.car.hasState) continue
+    const { position, velocity } = p.car
+    enemies.push({ id, x: position.x, z: position.z, vx: velocity.x, vz: velocity.z, hp: p.hp, maxHp: maxHealthFor(levelOf(id)), ko: p.ko, shield: p.shield })
+  }
+  for (const d of dummies.values()) {
+    if (d === bot || !d.isBot) continue
+    enemies.push({
+      id: d.id, x: d.x, z: d.z, vx: d.car.velocity.x, vz: d.car.velocity.z,
+      hp: d.health.hp, maxHp: d.health.max, ko: d.health.isKO, shield: d.health.isShielded,
+    })
+  }
+  return enemies
+}
+
+// Bot dirige: o cérebro devolve pedal, volante e boost, como o teclado
+function driveBot(bot, world, dt, simTime) {
+  if (bot.health.isKO) return NO_INPUT
+  // Pega esfera passando por cima (como eu)
+  if (bot.boosts < MAX_BOOSTS) {
+    const slot = orbs.findPickup(bot.car.root.position)
+    if (slot) {
+      net.sendPickup({ slot: slot.index, gen: slot.gen })
+      orbs.take(slot.index, slot.gen)
+      bot.boosts++
+      scoreUI.popup(bot.car.root.position, 'pickup')
+    }
+  }
+  if (phase !== 'playing' || simTime < bot.stunUntil) return NO_INPUT
+  const c = bot.car
+  const self = {
+    x: bot.x, z: bot.z, yaw: c.yaw, yawRate: c.yawRate, speed: c.velocity.length(),
+    hp: bot.health.hp, maxHp: bot.health.max, boosts: bot.boosts, boosting: c.isBoosting,
+  }
+  world.enemies = botEnemies(bot)
+  const { throttle, steer, boost } = bot.brain.think(dt, self, world)
+  if (boost && bot.boosts > 0 && !c.isBoosting) {
+    bot.boosts--
+    c.boost()
+  }
+  return { throttle, steer }
+}
+
+// Bonecos e bots: vida (volta do nocaute), direção dos bots e "estado pela
+// rede" como um jogador
 function updateDummies(dt, simTime) {
   const list = [...dummies.values()]
+  const world = list.some((d) => d.isBot) ? botWorld() : null
   for (const d of list) {
-    d.update(dt)
+    const input = d.isBot ? driveBot(d, world, dt, simTime) : NO_INPUT
+    if (d.update(dt, input) && d.isBot) placeBot(d)
     if (d.health.isKO) continue
     collideDummy(d, simTime)
     // Zona de cura vale para eles também
@@ -887,7 +1132,8 @@ function updateDummies(dt, simTime) {
       d.healTimer = d.healShown = 0
     }
   }
-  // Boneco contra boneco: separa e troca o empurrão (sem dano)
+  // Boneco contra boneco: separa e troca o empurrão; se quem bateu é um bot,
+  // a vítima leva dano (como numa batida entre jogadores)
   for (let i = 0; i < list.length; i++) {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i].car, b = list[j].car
@@ -898,11 +1144,30 @@ function updateDummies(dt, simTime) {
       b.separate(tmpImpulse.copy(hit.normal).negate(), hit.depth / 2)
       const impulse = a.collisionImpulse(hit.normal, b.velocity)
       if (impulse <= 0) continue
+      const judged = judgeHit(hit.normal, a.velocity, b.velocity) // antes do empurrão
+      const bImpact = b.velocity.dot(hit.normal)
       a.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
       b.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(-impulse))
+      if (judged.role === 'aggressor') botHits(list[i], list[j], judged.impact, hit.normal, -1, simTime)
+      if (judged.role === 'victim') botHits(list[j], list[i], bImpact, hit.normal, 1, simTime)
     }
   }
   for (const d of list) handlePeerState(d.id, d.state(simTime))
+}
+
+// Bot bateu em outro carro do campo (o empurrão normal já foi trocado): dano
+// pela força da batida; com boost, TURBO e arremesso mais longe.
+// `normal * side` aponta de quem bateu para a vítima
+function botHits(atk, vic, impact, normal, side, simTime) {
+  if (!atk.isBot || !atk.hitCooldown.ready(vic.id, simTime)) return
+  const boosted = atk.car.isBoosting
+  const tier = boosted ? 'turbo' : impactTier(impact)
+  if (boosted) atk.car.endBoost()
+  if (!tier || vic.health.isShielded) return
+  const damage = scaleDamage(DAMAGE[tier], levelOf(atk.id))
+  const push = boosted ? impact * (BOOST_PUSH - 1) * side : 0
+  damageDummy(vic, { ix: normal.x * push, iz: normal.z * push, damage, boosted }, atk.id)
+  scoreUI.popup(vic.car.root.position, tier, damage)
 }
 
 // Mureta, pneus e bastões, como o meu carro (com o combo turbo + mureta e
@@ -939,10 +1204,16 @@ function collideDummy(d, simTime) {
 function dummyHitsMe(d, normal, impact, simTime) {
   const impulse = d.car.collisionImpulse(tmpImpulse.copy(normal).negate(), car.velocity)
   if (impulse < MIN_IMPULSE || !d.hitCooldown.ready('eu', simTime)) return
+  // Bot com boost: arremessa mais longe, tira o TURBO e a mureta logo depois dói
+  const boosted = d.car.isBoosting
   d.car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(-impulse))
-  car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(impulse))
+  car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(impulse * (boosted ? BOOST_PUSH : 1)))
   kills.noteHit(d.id, simTime) // se eu cair, o abate é dele
-  const tier = impactTier(impact)
+  if (boosted) {
+    d.car.endBoost()
+    boostedUntil = simTime + WALL_DAMAGE_WINDOW
+  }
+  const tier = boosted ? 'turbo' : impactTier(impact)
   if (!tier || health.isShielded) return
   const damage = scaleDamage(DAMAGE[tier], levelOf(d.id))
   scoreUI.popup(car.root.position, tier, damage)
@@ -957,7 +1228,7 @@ const activeStorms = []
 const stormPool = []
 
 const playerName = (peerId) =>
-  dummies.get(peerId)?.name || roster.get(peerId)?.name || `Player ${peerId.slice(0, 4).toUpperCase()}`
+  dummies.get(peerId)?.name || netBots.get(peerId)?.name || roster.get(peerId)?.name || `Player ${peerId.slice(0, 4).toUpperCase()}`
 
 // Ultimate guardado ou em uso trava o boost
 const boostLocked = () => !!(ultSlot.kind || ultSlot.active)
@@ -967,9 +1238,7 @@ const isPowered = (id) => (id === net.selfId ? !!ultSlot.active : !!remotes?.get
 
 // Anfitrião da sala (lobby.js): quem está há mais tempo. Decide o item do centro
 function amHost() {
-  const members = [{ id: net.selfId, since: joinedAt }]
-  for (const [id, r] of roster) members.push({ id, since: r.since })
-  return hostOf(members) === net.selfId
+  return hostId() === net.selfId
 }
 
 function broadcastUlt() {
@@ -1232,7 +1501,7 @@ function placeMedkit(target) {
 }
 
 // Quantos na sala (no campo de testes, os bonecos contam)
-const playerCount = () => 1 + roster.size + (testMode ? dummies.size : 0)
+const playerCount = () => 1 + roster.size + Math.max(dummies.size, netBots.size)
 
 // Passo fixo: o anfitrião sorteia; eu curo enquanto estou dentro
 function updateMedkit(dt) {
@@ -1306,6 +1575,7 @@ const loop = new FixedStepLoop({
       if (playing) updateMissiles(dt, simTime)
       sendState(dt, simTime)
       if (testMode) updateDummies(dt, simTime)
+      else updateMatchBots(dt, simTime, wallTime)
     }
   },
 

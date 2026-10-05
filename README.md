@@ -25,6 +25,19 @@ parados que têm vida (levam dano, são nocauteados e voltam) e um painel para
 pegar qualquer ultimate, zerar a recarga, chamar o item do centro e a zona
 de cura, adicionar bonecos e se curar.
 
+**Bots:** toda partida tem **4 bots** (1 *Easy*, 2 *Normal*, 1 *Hard*), que
+contam no placar como qualquer jogador; dá para jogar sozinho numa sala só
+com eles. No campo de testes, eles são adicionados pela seção *Bots* do
+painel. São carrinhos que dirigem sozinhos, no estilo dos bots do League of
+Legends. Escolhem um alvo (perto e
+com pouca vida) e ficam nele, pegam esferas de boost pelo caminho, usam o
+boost quando o golpe vai acertar, dão ré para pegar embalo, desviam dos
+espinhos e dos pneus e, com a vida baixa, vão para a zona de cura. Brigam com
+você e entre si. Três níveis (*Easy*, *Normal*, *Hard*) mudam só a reação, a
+mira e as decisões; a física é a mesma do seu carro. O *Hard* guarda o boost
+para jogar o alvo na mureta (combo TURBO + PAREDE). Os bots ainda não usam
+ultimates.
+
 ## Controles
 
 | Tecla | Ação |
@@ -78,6 +91,7 @@ ajusta física, câmera, cores e efeitos. No
 | `progression.js` | níveis: o XP acumulado (dano causado, com bônus por diferença de nível e por abate) sobe o nível (120 para o 2, +138 para o 3, +156...; máx. 10); cada nível dá +5% de dano e +5 de vida máxima |
 | `medkit.js` / `medkitView.js` | zona de cura: aparece perto da briga quando alguém está com a vida baixa; quem fica dentro cura até 50% da vida perdida |
 | `testRange.js` | campo de testes: bonecos com vida, rede de mentira e painel |
+| `bots.js` | cérebro dos bots: escolhe alvo, persegue, desvia e decide o boost (devolve pedal/volante como o teclado) |
 | `match.js` | regra de vitória: relógio de 10 min, crédito dos abates e classificação |
 | `spawns.js` | nascimento: um canto por jogador no início; renascer no ponto mais vazio (estilo Quake 3/Halo) |
 | `tireWalls.js` | paredes de pneus: sorteio pelo mapa, girando em 90°, e colisão |
@@ -98,7 +112,11 @@ ajusta física, câmera, cores e efeitos. No
 Rede: cada jogador simula o próprio carro e manda o estado 20x por segundo;
 os outros são mostrados 100 ms no passado, interpolando entre estados reais.
 Numa batida, quem bateu resolve (calcula o próprio ricochete e manda o
-empurrão e o dano da vítima); cada jogador é dono da própria vida. Referências: Glenn Fiedler, *Fix Your Timestep* e
+empurrão e o dano da vítima); cada jogador é dono da própria vida. Os bots
+são simulados pelo anfitrião, que manda o estado deles como se fossem
+jogadores (e as batidas deles, com `by` = o bot); as batidas nos bots vão
+para o anfitrião. Se ele sai, o próximo anfitrião assume os bots de onde
+estavam. Referências: Glenn Fiedler, *Fix Your Timestep* e
 *State Synchronization*; Gabriel Gambetta, *Entity Interpolation*.
 
 ## Publicar

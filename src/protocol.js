@@ -24,6 +24,9 @@
 //   ultreq { n, op }                            pedido ao anfitrião: 'claim' (passei no centro)
 //   medkit { v, zones: [{ id, x, z, left }] }   zonas de cura ativas (só o anfitrião manda; medkit.js)
 //   match  { left, over }                       relógio da partida (só o anfitrião manda; match.js)
+//   bots   { list: [{ id, name, kind, state }] } bots da partida (só o anfitrião manda, 20x por
+//                                               segundo; state = mesmo formato do `state`; bots.js)
+//   (hit.by = bot que bateu, quando o anfitrião manda a batida de um bot; o id começa com "bot-")
 
 // Qualquer jogador pode mandar qualquer coisa. Um NaN num empurrão quebraria a
 // física de quem recebe para sempre, e um valor gigante jogaria o carro para
@@ -51,6 +54,9 @@ const countsOf = (v) => {
   return out
 }
 const ULT_OPS = ['claim']
+const BOT_KINDS = ['easy', 'normal', 'hard'] // igual a bots.js
+const MAX_BOTS = 8
+const botId = (v) => (typeof v === 'string' && v.length <= 16 && v.startsWith('bot-') ? v : null)
 const NAME_MAX = 16 // igual a lobby.js
 const PHASES = ['lobby', 'playing']
 const seedOf = (m) => {
@@ -101,6 +107,7 @@ export const validators = {
     out.zap = m.zap === true
     out.blast = m.blast === true
     out.rocket = m.rocket === true
+    out.by = botId(m.by)
     return out
   },
   wall(m) {
@@ -166,6 +173,18 @@ export const validators = {
   match(m) {
     const left = num(m?.left, 0, 3600)
     return left === null ? null : { left, over: m.over === true }
+  },
+  bots(m) {
+    if (!Array.isArray(m?.list) || m.list.length > MAX_BOTS) return null
+    const list = []
+    for (const b of m.list) {
+      const id = botId(b?.id)
+      const state = validators.state(b?.state)
+      if (!id || !state || !BOT_KINDS.includes(b.kind)) return null
+      const name = typeof b.name === 'string' ? b.name.replace(/\s+/g, ' ').trim().slice(0, 24) : 'Bot'
+      list.push({ id, name, kind: b.kind, state })
+    }
+    return { list }
   },
   ultreq(m) {
     const n = int(m?.n, 0, 1e9)
