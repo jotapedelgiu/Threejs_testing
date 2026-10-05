@@ -282,6 +282,11 @@ export class PlayerHud {
   }
 }
 
+// Nome some e encolhe com a distância da câmera (zoom out): perto = cheio, longe = pequeno e fraco
+const NAME_NEAR = 25
+const NAME_FAR = 80
+const NAME_MIN_SCALE = 0.5
+const NAME_MIN_OPACITY = 0.3
 const BAR_AHEAD = 1.9   // m do centro do carro na direção da câmera: fica logo abaixo dele na tela
 
 /**
@@ -352,6 +357,7 @@ export class CarTags {
       const tag = this.tags.get(s.id) ?? this.create(s.id)
       const barAt = s.visible ? this.toScreen(this.tmp.copy(s.position).setY(0).add(this.ahead), camera) : null
       tag.name.hidden = !s.name
+      tag.bar.classList.toggle('mine', !s.name) // sem nome = o meu carro: moldura roxa para achar na briga
       tag.bar.hidden = !barAt
       if (s.powered !== tag.powered) {
         tag.powered = s.powered
@@ -361,6 +367,9 @@ export class CarTags {
         if (s.name !== tag.text) tag.name.textContent = tag.text = s.name
         this.setHp(tag, s.hp, s.maxHp)
         tag.bar.style.transform = `translate(${barAt[0]}px, ${barAt[1]}px) translate(-50%, 0)`
+        const far = Math.min(1, Math.max(0, (camera.position.distanceTo(s.position) - NAME_NEAR) / (NAME_FAR - NAME_NEAR)))
+        tag.name.style.opacity = (1 - far * (1 - NAME_MIN_OPACITY)).toFixed(2)
+        tag.name.style.transform = `translateX(-50%) scale(${(1 - far * (1 - NAME_MIN_SCALE)).toFixed(2)})`
       }
     }
     // Quem saiu da sala perde a etiqueta
