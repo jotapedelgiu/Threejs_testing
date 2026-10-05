@@ -44,6 +44,13 @@ export class TrainingDummy {
     this.stunUntil = 0    // atordoado (Sobrecarga) até este instante
     this.colors = DUMMY_COLORS
     this.deathSpot = null // onde foi nocauteado (bot renasce longe dali)
+    // Ultimate (só bots; main.js): inventário, efeitos em andamento e mísseis
+    this.ult = null       // UltimateSlot
+    this.storm = null     // StormStrikes
+    this.shockCast = null
+    this.missileShotsLeft = 0
+    this.missileClock = 0
+    this.missilesFired = 0 // vai no estado: os outros lançam um a cada aumento
   }
 
   get isBot() {
@@ -103,6 +110,9 @@ export class TrainingDummy {
     this.kills.lastHit = null
     this.boosts = 0
     this.stunUntil = 0
+    this.ult?.reset()
+    this.shockCast = null
+    this.missileShotsLeft = 0
     this.brain?.reset()
     this.car.reset()
   }
@@ -112,7 +122,7 @@ export class TrainingDummy {
     return {
       ...this.car.getNetState(), t,
       hp: this.health.hp, ko: this.health.isKO, shield: this.health.isShielded,
-      livery: null, colors: this.colors, ult: null,
+      livery: null, colors: this.colors, ult: this.ult?.active ?? null, ms: this.missilesFired,
       deaths: this.kills.deaths, koBy: { ...this.kills.koBy }, asBy: { ...this.kills.asBy },
       xpBy: { ...this.kills.xpBy },
     }

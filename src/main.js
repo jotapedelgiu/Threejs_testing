@@ -13,6 +13,7 @@ import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
 import { readDriveInput, isDown, wasPressed } from './input.js'
 import { joinArena } from './net.js'
+import { syncClock } from './clock.js'
 import { RemotePlayers } from './remotePlayers.js'
 import { measureFootprint, testCars, testArenaWalls } from './collision.js'
 import { Orbs, orbCountFor } from './orbs.js'
@@ -438,7 +439,11 @@ const menu = new MenuUI({
   onTest: enterTestRange,
 })
 
-function enterRoom(code, name) {
+// Começa já na tela inicial: até o jogador entrar numa sala, a hora já veio
+const clockSynced = syncClock()
+
+async function enterRoom(code, name) {
+  await clockSynced // relógio errado = relays recusam e ninguém se conecta
   roomCode = code
   myName = name
   joinedAt = Date.now()
@@ -886,7 +891,7 @@ function enterTestRange(name) {
 // Batida "mandada" para um boneco: aplica direto nele
 function hitDummy(hit) {
   const d = dummies.get(hit.target)
-  if (d) damageDummy(d, hit, net.selfId)
+  if (d) damageDummy(d, hit, hit.by ?? net.selfId)
 }
 
 // Empurrão e dano num boneco/bot; o XP vai para `attackerId` (eu ou um bot)
@@ -927,6 +932,8 @@ function addBot(kind, id = `bot-${++dummySerial}`, avoid = []) {
   const bot = new TrainingDummy(id, `Bot ${botName}`, body, { ...TEST_SPAWN, yaw: 0 })
   bot.botName = botName
   bot.brain = new BotBrain(kind)
+  bot.ult = new UltimateSlot()
+  bot.storm = new StormStrikes(ULTIMATES.overcharge)
   const paint = pickLivery([livery?.name, ...(remotes?.liveries() ?? []), ...[...dummies.values()].map((d) => d.livery)])
   bot.livery = paint.name
   bot.colors = [paint.primary, paint.secondary]
@@ -1016,6 +1023,7 @@ function collideBotsWithPlayers(simTime, wallTime) {
       const damage = shield || !tier ? 0 : scaleDamage(DAMAGE[tier], levelOf(bot.id))
       const push = impulse * (boosted ? BOOST_PUSH : 1)
       net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted, by: bot.id })
+      bot.brain.noteHit(peerId)
       if (boosted) c.endBoost()
       if (damage) scoreUI.popup(remote.root.position, tier, damage)
     }
@@ -1056,8 +1064,9 @@ function botWorld() {
     orbs: orbs.slots.filter((slot) => orbs.isActive(slot)).map((slot) => slot.mesh.position),
     heal: medkit.zones.map((z) => ({ x: z.x, z: z.z, radius: MEDKIT.radius })),
     obstacles,
+    ult: { phase: ultimate.phase, timer: ultimate.timer },
     halfX: arena.halfX, halfZ: arena.halfZ,
-    maxBoosts: MAX_BOOSTS, maxSpeed: car.params.maxSpeed,
+    maxBoosts: MAX_BOOSTS, maxSpeed: car.params.maxSpeed, turnSpeed: car.params.turnSpeed,
   }
 }
 
@@ -1066,18 +1075,18 @@ function botWorld() {
 function botEnemies(bot) {
   const enemies = [{
     id: net.selfId, x: car.root.position.x, z: car.root.position.z, vx: car.velocity.x, vz: car.velocity.z,
-    hp: health.hp, maxHp: health.max, ko: health.isKO, shield: health.isShielded,
+    hp: health.hp, maxHp: health.max, ko: health.isKO, shield: health.isShielded, ult: ultSlot.active,
   }]
   for (const [id, p] of remotes.entries()) {
     if (dummies.has(id) || !p.car.hasState) continue
     const { position, velocity } = p.car
-    enemies.push({ id, x: position.x, z: position.z, vx: velocity.x, vz: velocity.z, hp: p.hp, maxHp: maxHealthFor(levelOf(id)), ko: p.ko, shield: p.shield })
+    enemies.push({ id, x: position.x, z: position.z, vx: velocity.x, vz: velocity.z, hp: p.hp, maxHp: maxHealthFor(levelOf(id)), ko: p.ko, shield: p.shield, ult: p.ult })
   }
   for (const d of dummies.values()) {
     if (d === bot || !d.isBot) continue
     enemies.push({
       id: d.id, x: d.x, z: d.z, vx: d.car.velocity.x, vz: d.car.velocity.z,
-      hp: d.health.hp, maxHp: d.health.max, ko: d.health.isKO, shield: d.health.isShielded,
+      hp: d.health.hp, maxHp: d.health.max, ko: d.health.isKO, shield: d.health.isShielded, ult: d.ult?.active,
     })
   }
   return enemies
@@ -1096,19 +1105,112 @@ function driveBot(bot, world, dt, simTime) {
       scoreUI.popup(bot.car.root.position, 'pickup')
     }
   }
-  if (phase !== 'playing' || simTime < bot.stunUntil) return NO_INPUT
+  if (phase !== 'playing') return NO_INPUT
+  claimUltForBot(bot)
+  // Atordoado, ou lançando a Onda de choque: parado
+  if (simTime < bot.stunUntil || bot.ult.active === 'shockwave') return NO_INPUT
   const c = bot.car
+  const slot = bot.ult
   const self = {
     x: bot.x, z: bot.z, yaw: c.yaw, yawRate: c.yawRate, speed: c.velocity.length(),
     hp: bot.health.hp, maxHp: bot.health.max, boosts: bot.boosts, boosting: c.isBoosting,
+    ult: { stored: slot.kind, ready: slot.ready, active: slot.active, storedLeft: slot.storedLeft },
   }
   world.enemies = botEnemies(bot)
-  const { throttle, steer, boost } = bot.brain.think(dt, self, world)
-  if (boost && bot.boosts > 0 && !c.isBoosting) {
+  const { throttle, steer, boost, ult } = bot.brain.think(dt, self, world)
+  // Ultimate guardado ou em uso trava o boost (mesma regra do jogador)
+  if (boost && bot.boosts > 0 && !c.isBoosting && !slot.kind && !slot.active) {
     bot.boosts--
     c.boost()
   }
-  return { throttle, steer }
+  if (ult) castBotUlt(bot)
+  return slot.active === 'missile' ? { throttle: 0, steer } : { throttle, steer }
+}
+
+// --- Ultimate dos bots -----------------------------------------------------------
+// Mesmas regras do meu: pega no centro (o anfitrião concede), guarda, usa, e
+// os golpes saem como os de um jogador (pela rede, com `by` = o bot). Quem
+// simula é quem simula o bot (o anfitrião, ou eu no campo de testes)
+
+// Bot passando no centro com o item lá: é dele (só o anfitrião concede)
+function claimUltForBot(bot) {
+  if (ultimate.phase !== 'available' || !bot.ult.canPickUp || !amHost()) return
+  if (Math.hypot(bot.x, bot.z) >= ULT_PICKUP_RADIUS) return
+  if (!ultimate.claim(bot.id)) return
+  checkUltGiven()
+  broadcastUlt()
+}
+
+function castBotUlt(bot) {
+  const kind = bot.ult.activate()
+  if (!kind) return
+  const c = bot.car
+  if (kind === 'overcharge') bot.storm.reset()
+  if (kind === 'shockwave') {
+    const dir = { x: Math.sin(c.yaw), z: Math.cos(c.yaw) }
+    bot.shockCast = new ShockwaveCast(ULTIMATES.shockwave, { x: bot.x + dir.x * SHOCK_NOSE, z: bot.z + dir.z * SHOCK_NOSE }, dir)
+    c.halt()
+  }
+  if (kind === 'missile') {
+    c.halt()
+    bot.missileShotsLeft = ULTIMATES.missile.shots
+    bot.missileClock = 0
+  }
+}
+
+// Alvos do ultimate de um bot: todos os outros carros (posições reais dos
+// que eu simulo)
+function botUltTargets(bot) {
+  const list = []
+  if (!health.isKO) list.push({ id: net.selfId, x: car.root.position.x, z: car.root.position.z, immune: health.isShielded })
+  for (const d of dummies.values()) if (d !== bot && !d.health.isKO) list.push({ id: d.id, x: d.x, z: d.z, immune: d.health.isShielded })
+  for (const [id, p] of remotes.entries()) {
+    if (dummies.has(id) || !p.car.hasState || p.ko) continue
+    list.push({ id, x: p.car.root.position.x, z: p.car.root.position.z, immune: p.shield })
+  }
+  return list
+}
+
+// Golpe do ultimate de um bot em `targetId`: vai pela rede como o de um
+// jogador (bonecos/bots que eu simulo recebem na hora); se o alvo sou eu, aplico
+function botUltHit(bot, targetId, hit, popup) {
+  const full = { target: targetId, ...hit, by: bot.id }
+  net.sendHit(full)
+  if (targetId === net.selfId) receiveHit(full, bot.id)
+  const position = positionOf(targetId) ?? dummies.get(targetId)?.car.root.position
+  if (position) scoreUI.popup(position, popup, hit.damage)
+  bot.brain.noteHit(targetId)
+}
+
+// Passo fixo: relógio do inventário e os efeitos em andamento
+function updateBotUltimate(bot, dt) {
+  const slot = bot.ult
+  if (bot.health.isKO) slot.stop()
+  slot.update(dt)
+  if (slot.active !== 'shockwave') bot.shockCast = null
+  if (slot.active !== 'missile') bot.missileShotsLeft = 0
+  const scale = (damage) => scaleDamage(damage, levelOf(bot.id))
+  if (bot.shockCast) {
+    for (const h of bot.shockCast.update(dt, botUltTargets(bot))) {
+      botUltHit(bot, h.id, { ix: h.dx * h.push, iz: h.dz * h.push, damage: scale(h.damage), boosted: true, blast: true }, 'blast')
+    }
+    if (bot.shockCast.done) bot.shockCast = null
+  }
+  // Rajada de mísseis: o contador vai no estado (todos lançam o míssil, eu
+  // inclusive, em handlePeerState); o acerto é calculado em updateMissiles
+  if (bot.missileShotsLeft > 0 && (bot.missileClock -= dt) <= 0) {
+    bot.missileClock += ULTIMATES.missile.shotInterval
+    bot.missileShotsLeft--
+    bot.missilesFired++
+  }
+  if (slot.active !== 'overcharge') return
+  const pos = bot.car.root.position
+  for (const st of bot.storm.update(dt, pos.x, pos.z, botUltTargets(bot))) {
+    const push = bot.storm.spec.push
+    const to = positionOf(st.id) ?? dummies.get(st.id)?.car.root.position
+    if (to) ultView.bolt(tmpBoltFrom.copy(pos).setY(2.6), tmpBoltTo.copy(to).setY(0.8))
+    botUltHit(bot, st.id, { ix: st.dx * push, iz: st.dz * push, damage: scale(st.damage), boosted: false, stun: st.stun, zap: true }, st.stun ? 'stun' : 'zap')
+  }
 }
 
 // Bonecos e bots: vida (volta do nocaute), direção dos bots e "estado pela
@@ -1117,6 +1219,7 @@ function updateDummies(dt, simTime) {
   const list = [...dummies.values()]
   const world = list.some((d) => d.isBot) ? botWorld() : null
   for (const d of list) {
+    if (d.isBot && phase === 'playing') updateBotUltimate(d, dt)
     const input = d.isBot ? driveBot(d, world, dt, simTime) : NO_INPUT
     if (d.update(dt, input) && d.isBot) placeBot(d)
     if (d.health.isKO) continue
@@ -1163,6 +1266,7 @@ function botHits(atk, vic, impact, normal, side, simTime) {
   const boosted = atk.car.isBoosting
   const tier = boosted ? 'turbo' : impactTier(impact)
   if (boosted) atk.car.endBoost()
+  atk.brain.noteHit(vic.id)
   if (!tier || vic.health.isShielded) return
   const damage = scaleDamage(DAMAGE[tier], levelOf(atk.id))
   const push = boosted ? impact * (BOOST_PUSH - 1) * side : 0
@@ -1209,6 +1313,7 @@ function dummyHitsMe(d, normal, impact, simTime) {
   d.car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(-impulse))
   car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(impulse * (boosted ? BOOST_PUSH : 1)))
   kills.noteHit(d.id, simTime) // se eu cair, o abate é dele
+  d.brain?.noteHit(net.selfId)
   if (boosted) {
     d.car.endBoost()
     boostedUntil = simTime + WALL_DAMAGE_WINDOW
@@ -1262,6 +1367,7 @@ function checkUltGiven() {
     scoreUI.popup(car.root.position, 'ultget')
     announce(`⚡ YOU GOT ${name}!`, `use it within ${Math.round(ultSlot.storedLeft)}s or lose it${ultSlot.cooldown > 0 ? ' (unlocks after cooldown)' : ' · press E'} · boost locked`, 'mine')
   } else {
+    dummies.get(given.owner)?.ult?.give(given.kind) // um bot que eu simulo
     announce(`⚡ ${playerName(given.owner)} GOT ${name}`, 'watch out', 'enemy')
   }
 }
@@ -1297,12 +1403,24 @@ function launchMissile(carPosition, yaw, owner) {
 function updateMissiles(dt, simTime) {
   const mine = net.selfId
   for (const { shot, owner } of missiles) {
-    // O meu míssil acerta quem estiver no caminho (ele continua voando)
-    for (const h of shot.update(dt, owner === mine ? ultTargets() : [])) {
+    // O meu míssil (ou o de um bot que eu simulo) acerta quem estiver no
+    // caminho (ele continua voando)
+    const bot = owner !== mine && dummies.get(owner)?.isBot ? dummies.get(owner) : null
+    for (const h of shot.update(dt, owner === mine ? ultTargets() : bot ? botUltTargets(bot) : [])) {
+      if (bot) {
+        botUltHit(bot, h.id, { ix: h.dx * h.push, iz: h.dz * h.push, damage: scaleDamage(h.damage, levelOf(bot.id)), boosted: false, rocket: true }, 'rocket')
+        continue
+      }
       const damage = scaleDamage(h.damage, myLevel)
       net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage, boosted: false, rocket: true })
       scoreUI.popup(remotes.get(h.id).car.root.position, 'rocket', damage)
     }
+  }
+  // Bots no rastro de outro: lentos também
+  for (const d of dummies.values()) {
+    if (!d.isBot) continue
+    if (!d.health.isKO && missiles.some((m) => m.owner !== d.id && m.shot.trailContains(d.x, d.z))) d.slowUntil = simTime + ULTIMATES.missile.slowLinger
+    d.car.speedScale = simTime < (d.slowUntil ?? 0) ? ULTIMATES.missile.slow : 1
   }
   for (let i = missiles.length - 1; i >= 0; i--) if (missiles[i].shot.expired) missiles.splice(i, 1)
   missileShots.length = 0
