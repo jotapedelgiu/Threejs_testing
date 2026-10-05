@@ -10,17 +10,18 @@
 export const MIN_IMPULSE = 0.3  // m/s; empurrões menores que isso são só encostar
 const HIT_COOLDOWN = 0.6        // s entre batidas do mesmo par
 const TIE_MARGIN = 0.75         // m/s; diferença abaixo disso = os dois bateram
+export const HEAD_ON_MIN = 2    // m/s; entre jogadores, os dois indo um para cima do outro assim = batida de frente
 
 // Balanceamento (ver bate-bate_balanceamento.xlsx): com 100 de vida e a
 // mistura típica de batidas, um nocaute leva ~36 s de briga (TTK alvo de
-// arena arcade). Os danos mantêm a proporção 1:2:3 entre leve, FORTE e
-// PANCADA; o TURBO vale mais que uma PANCADA e o combo TURBO + PAREDE tira
-// 1/3 da vida.
+// arena arcade). A curva é acentuada: leve, FORTE e PANCADA seguem ~1:2,4:4,8
+// (embalo vale muito); o TURBO vale mais que uma PANCADA e o combo TURBO +
+// PAREDE tira quase metade da vida.
 export const DAMAGE = {
   light: 5,
-  strong: 10,
-  smash: 15,
-  turbo: 24, // batida com boost
+  strong: 12,
+  smash: 24,
+  turbo: 38, // batida com boost
   wall: 8,   // bater na parede logo depois de levar um TURBO
   spike: 6,  // bater num bastão com espinhos
 }
@@ -75,15 +76,20 @@ export const WALL_DAMAGE_MIN_SPEED = 2 // m/s batendo na parede
  *   só o próprio ricochete e ninguém leva dano
  * - 'victim': foi o outro; espero a mensagem dele com o empurrão e o dano
  * @param {THREE.Vector3} normal do outro para mim
- * @returns {{ role: 'aggressor' | 'tie' | 'victim', impact: number }} impact =
- *   minha velocidade indo para cima do outro (a força da minha batida)
+ * @param {number} headOnMin se os dois vêm um para cima do outro com pelo menos
+ *   isso (m/s), é batida de frente (empate) mesmo com velocidades diferentes:
+ *   quem vê o outro com atraso erraria quem é o mais rápido
+ * @returns {{ role: 'aggressor' | 'tie' | 'victim', impact: number, theirs: number }}
+ *   impact = minha velocidade indo para cima do outro (a força da minha batida);
+ *   theirs = a dele vindo para cima de mim
  */
-export function judgeHit(normal, myVelocity, otherVelocity) {
+export function judgeHit(normal, myVelocity, otherVelocity, headOnMin = Infinity) {
   const myPush = -myVelocity.dot(normal)      // eu indo para cima do outro
   const theirPush = otherVelocity.dot(normal) // o outro vindo para cima de mim
   const diff = myPush - theirPush
-  const role = diff > TIE_MARGIN ? 'aggressor' : diff < -TIE_MARGIN ? 'victim' : 'tie'
-  return { role, impact: myPush }
+  const headOn = myPush >= headOnMin && theirPush >= headOnMin
+  const role = headOn || Math.abs(diff) <= TIE_MARGIN ? 'tie' : diff > 0 ? 'aggressor' : 'victim'
+  return { role, impact: myPush, theirs: theirPush }
 }
 
 /** Evita contar o mesmo choque várias vezes enquanto os carros se encostam. */
@@ -97,6 +103,150 @@ export class HitCooldown {
   /** Já resolvi uma batida com esse jogador agora há pouco? */
   recent(peerId, now) {
     return now - (this.last.get(peerId) ?? -Infinity) < HIT_COOLDOWN
+  }
+}
+
+// --- Batida em cadeia ----------------------------------------------------------
+// Ricochete: quem foi arremessado e, no embalo do empurrão, acerta outro carro
+// está só repassando o empurrão: o dano dessa batida conta para quem empurrou,
+// reduzido a cada repasse. Assim ninguém "rouba" o abate por ter sido
+// arremessado em alguém. Só vale logo depois do empurrão, batendo no sentido em
+// que foi empurrado, e uma vez só (uma batida qualquer depois é dele mesmo).
+export const CHAIN_WINDOW = 0.8  // s depois do empurrão em que a batida ainda é ricochete
+export const CHAIN_ALIGN = 0.6   // cosseno mínimo entre o empurrão e a direção do outro carro (~53°)
+export const CHAIN_FALLOFF = 0.6 // fração do dano que sobra a cada repasse
+export const CHAIN_MAX = 3       // repasses no máximo
+
+/** Dano de uma batida repassada `relay` vezes (1 = primeiro repasse). */
+export function chainDamage(damage, relay) {
+  return Math.round(damage * CHAIN_FALLOFF ** relay)
+}
+
+/** De quem foi o último empurrão que um carro levou (um por carro). */
+export class PushChain {
+  owner = null // quem empurrou primeiro (o dono do dano repassado)
+  relay = 0    // repasses até chegar neste carro (0 = empurrão direto)
+  at = -Infinity
+  dx = 0       // sentido do empurrão (unitário, no chão)
+  dz = 0
+
+  /**
+   * Levei um empurrão de `owner`, que já veio repassado `relay` vezes, no
+   * sentido (dx, dz). Sem sentido (só dano, sem empurrão) não há ricochete.
+   */
+  pushed(owner, relay, now, dx, dz) {
+    const length = Math.hypot(dx, dz)
+    if (!owner || relay >= CHAIN_MAX || !(length > 1e-6)) return this.clear()
+    this.owner = owner
+    this.relay = relay
+    this.at = now
+    this.dx = dx / length
+    this.dz = dz / length
+  }
+
+  /**
+   * Bati em `targetId` agora (sem boost: com boost a batida é minha), que está
+   * no sentido (toX, toZ). É ricochete se foi logo depois do empurrão e no
+   * sentido dele; aí a batida é de quem empurrou e o ricochete se gasta.
+   * @returns {{ owner: string, relay: number } | null} relay desta batida
+   */
+  ricochet(targetId, now, toX, toZ) {
+    if (!this.owner || now - this.at >= CHAIN_WINDOW || targetId === this.owner) return null
+    const length = Math.hypot(toX, toZ)
+    if (!(length > 1e-6) || (this.dx * toX + this.dz * toZ) / length < CHAIN_ALIGN) return null
+    const out = { owner: this.owner, relay: this.relay + 1 }
+    this.clear()
+    return out
+  }
+
+  clear() {
+    this.owner = null
+    this.relay = 0
+    this.at = -Infinity
+    this.dx = this.dz = 0
+  }
+}
+
+/**
+ * Batida de frente entre dois jogadores: os dois levam EXATAMENTE o mesmo dano.
+ * Cada um vê o outro com atraso e pode julgar diferente (um acha que bateu, o
+ * outro acha empate), então quem decide é sempre o jogador de menor id: o dano
+ * dele vale para os dois. Quem tem o maior id só aceita o que chega.
+ * - menor id (`sending`): se o outro já me bateu há pouco, repito o dano dele;
+ *   senão uso o meu. Empate: o dano vai para os dois (`mutual`); batida só
+ *   minha: vai normal e, se o outro também bater (ou ecoar), ele conta para os dois
+ * - maior id (`received`/`noteTie`): aplico o que chegar; se eu julguei empate
+ *   e o menor id bateu "normal" (achando que só ele bateu), devolvo o eco para
+ *   ele levar o mesmo dano
+ * `now` em segundos (tempo de simulação).
+ */
+export class RamLedger {
+  static WINDOW = 0.8 // s: tempo para a batida do outro chegar pela rede
+  sent = new Map()    // peerId -> { at, damage, applied }  (menor id: o que mandei)
+  got = new Map()     // peerId -> { at, damage, echoed }   (batidas normais recebidas)
+  ties = new Map()    // peerId -> { at }                   (maior id: julguei empate)
+
+  recent(map, peerId, now) {
+    const entry = map.get(peerId)
+    return entry && now - entry.at < RamLedger.WINDOW ? entry : null
+  }
+
+  /**
+   * Menor id mandando a batida contra `peerId`.
+   * @returns {{ damage: number, mutual: boolean, selfApply: boolean }}
+   *   selfApply = eu também levo esse dano agora
+   */
+  sending(peerId, damage, now, { tie }) {
+    const got = this.recent(this.got, peerId, now)
+    if (got) {
+      this.got.delete(peerId)
+      return { damage: got.damage, mutual: true, selfApply: false } // eu já levei o dano dele
+    }
+    this.sent.set(peerId, { at: now, damage, applied: tie })
+    return { damage, mutual: tie, selfApply: tie }
+  }
+
+  /**
+   * Maior id: julguei empate. @returns o dano a devolver (eco) se o menor id
+   * já tinha me batido, senão null
+   */
+  noteTie(peerId, now) {
+    this.ties.set(peerId, { at: now })
+    const got = this.recent(this.got, peerId, now)
+    if (!got || got.echoed) return null
+    got.echoed = true
+    return got.damage
+  }
+
+  /**
+   * Chegou uma batida de `peerId` (jogador, não golpe de ultimate).
+   * @returns {{ apply: number, echo: number | null }} dano que eu levo, e
+   *   eco a devolver (só o maior id)
+   */
+  received(peerId, hit, now, { iAmLower }) {
+    if (iAmLower) {
+      if (hit.mutual) return { apply: hit.damage, echo: null } // o maior id ecoou a minha batida
+      const sent = this.recent(this.sent, peerId, now)
+      if (sent) {
+        // Também bati nele: vale o meu dano, para os dois
+        const apply = sent.applied ? 0 : sent.damage
+        sent.applied = true
+        return { apply, echo: null }
+      }
+      this.got.set(peerId, { at: now, damage: hit.damage })
+      return { apply: hit.damage, echo: null }
+    }
+    // Maior id: levo o que chegar
+    let echo = null
+    if (!hit.mutual) {
+      const entry = { at: now, damage: hit.damage, echoed: false }
+      this.got.set(peerId, entry)
+      if (this.recent(this.ties, peerId, now) !== null) {
+        entry.echoed = true
+        echo = hit.damage
+      }
+    }
+    return { apply: hit.damage, echo }
   }
 }
 

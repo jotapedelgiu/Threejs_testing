@@ -14,6 +14,22 @@ html, body {
   height: 100%;
 }
 
+/* Escuridão da Emboscada (como a ult do Nocturne): tela escura com um pouco
+   de visão em volta do meu carro (--x/--y = onde ele está na tela) */
+.darkness {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease;
+  background: radial-gradient(
+    circle at var(--x, 50%) var(--y, 50%),
+    rgba(4, 2, 12, 0.25) 0,
+    rgba(4, 2, 12, 0.55) 18vmin,
+    rgba(4, 2, 12, 0.9) 60vmin
+  );
+}
+
 .label {
   position: fixed;
   right: 24px;
@@ -145,24 +161,24 @@ html, body {
 .hit-popup {
   position: fixed;
   transform: translate(-50%, -50%);
-  font-size: 30px;
+  font-size: 18px;
   font-weight: 900;
   font-style: italic;
   white-space: nowrap;
   color: #ffd23f;
-  -webkit-text-stroke: 2px #000;
-  text-shadow: 3px 3px 0 #000;
+  -webkit-text-stroke: 1.5px #000;
+  text-shadow: 2px 2px 0 #000;
   pointer-events: none;
   animation: hit-pop 1.1s ease-out forwards;
 }
 
 .hit-popup.mult-2 {
-  font-size: 38px;
+  font-size: 23px;
   color: #ff9f1c;
 }
 
 .hit-popup.mult-3 {
-  font-size: 48px;
+  font-size: 29px;
   color: #ff3d3d;
 }
 
@@ -175,27 +191,27 @@ html, body {
 }
 
 .hit-popup.turbo {
-  font-size: 54px;
+  font-size: 32px;
   color: #3fd0ff;
 }
 
 .hit-popup.spike {
-  font-size: 40px;
+  font-size: 24px;
   color: #c77dff;
 }
 
 .hit-popup.wall {
-  font-size: 40px;
+  font-size: 24px;
   color: #ff7a1a;
 }
 
 .hit-popup.ko {
-  font-size: 56px;
+  font-size: 34px;
   color: #ffffff;
 }
 
 .hit-popup.pickup {
-  font-size: 22px;
+  font-size: 13px;
   color: #9ff6ff;
 }
 
@@ -875,12 +891,12 @@ body.in-menu .car-tags {
 
 /* --- Ultimate ----------------------------------------------------------------- */
 .hit-popup.zap {
-  font-size: 30px;
+  font-size: 18px;
   color: #fff27a;
 }
 
 .hit-popup.stun {
-  font-size: 40px;
+  font-size: 24px;
   color: #ffd21f;
 }
 
@@ -1132,13 +1148,13 @@ body.in-menu .test-panel {
 }
 
 .hit-popup.blast {
-  font-size: 50px;
+  font-size: 30px;
   color: #ff8a2a;
 }
 
 /* --- Cápsula de vida ------------------------------------------------------------ */
 .hit-popup.heal {
-  font-size: 36px;
+  font-size: 22px;
   color: #4cd964;
 }
 
@@ -1185,7 +1201,7 @@ body.in-menu .test-panel {
 
 /* Míssil: lentidão do rastro */
 .hit-popup.slow {
-  font-size: 30px;
+  font-size: 18px;
   color: #7cf3ff;
 }
 

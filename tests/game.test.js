@@ -9,7 +9,7 @@ import { measureFootprint, testCars, testArenaWalls, testCarCircle } from '../sr
 import { SpikedBats, placeBats, extractProp } from '../src/bats.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { readFileSync } from 'node:fs'
-import { judgeHit, impactDamage, impactTier, tierOfDamage, DAMAGE, HitCooldown, damageParams, Health, MAX_HEALTH, KO_TIME, RESPAWN_SHIELD } from '../src/damage.js'
+import { judgeHit, impactDamage, impactTier, tierOfDamage, DAMAGE, HitCooldown, RamLedger, PushChain, chainDamage, CHAIN_WINDOW, CHAIN_MAX, HEAD_ON_MIN, damageParams, Health, MAX_HEALTH, KO_TIME, RESPAWN_SHIELD } from '../src/damage.js'
 import { validators } from '../src/protocol.js'
 import { Orbs, orbCountFor } from '../src/orbs.js'
 import { pickLivery, LIVERIES, materialGroup, MATERIAL_GROUPS } from '../src/paint.js'
@@ -19,11 +19,12 @@ import { newRoomCode, normalizeCode, cleanName, hostOf, CODE_LENGTH } from '../s
 import { TireWalls, placeTireWalls, prepareTireWall } from '../src/tireWalls.js'
 import { distanceToSegment } from '../src/collision.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from '../src/spawns.js'
-import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME } from '../src/ultimate.js'
-import { levelFor, damageToLevelUp, damageScale, scaleDamage, maxHealthFor, MAX_LEVEL, xpForHit, xpForKill, repeatScale, XP_EXTRA } from '../src/progression.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ambushStrikes, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME, storeTimeFor } from '../src/ultimate.js'
+import { levelFor, damageToLevelUp, damageScale, scaleDamage, maxHealthFor, MAX_LEVEL, xpForHit, xpForKill, xpForAssist, repeatScale, XP_EXTRA } from '../src/progression.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
 import { BotBrain, BOT_SKILLS, headingTo, pathClear } from '../src/bots.js'
 import { KillTracker, KILL_CREDIT, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock, newKills, MATCH_TIME } from '../src/match.js'
+import { buildStats, buildReport, kda, LevelTimer } from '../src/matchStats.js'
 
 const DT = 1 / 60
 // Carro com o tamanho da base do bate-bate (~1,3 x 2,7 m)
@@ -133,9 +134,9 @@ describe('Dano e vida', () => {
     assert.equal(impactDamage(damageParams.smash), DAMAGE.smash)
   })
 
-  test('balanceamento: proporção 1:2:3, TURBO vale mais que uma PANCADA', () => {
-    assert.equal(DAMAGE.strong, DAMAGE.light * 2)
-    assert.equal(DAMAGE.smash, DAMAGE.light * 3)
+  test('balanceamento: curva acentuada, TURBO vale mais que uma PANCADA', () => {
+    assert.ok(DAMAGE.strong >= DAMAGE.light * 2)
+    assert.ok(DAMAGE.smash >= DAMAGE.strong * 2)
     assert.ok(DAMAGE.turbo > DAMAGE.smash * 1.5)
   })
 
@@ -179,12 +180,45 @@ describe('Dano e vida', () => {
     assert.equal(judgeHit(n, forward, new THREE.Vector3(0, 0, -6)).role, 'tie')
   })
 
+  test('de frente entre jogadores: os dois vindo um para cima do outro é empate, mesmo com velocidades diferentes', () => {
+    const n = new THREE.Vector3(0, 0, -1)
+    const fast = new THREE.Vector3(0, 0, 8), slowBack = new THREE.Vector3(0, 0, -3)
+    assert.equal(judgeHit(n, fast, slowBack).role, 'aggressor', 'sem a regra, o mais rápido bate')
+    const j = judgeHit(n, fast, slowBack, HEAD_ON_MIN)
+    assert.equal(j.role, 'tie')
+    assert.deepEqual([j.impact, j.theirs], [8, 3])
+    assert.equal(judgeHit(n, fast, new THREE.Vector3(0, 0, -1), HEAD_ON_MIN).role, 'aggressor', 'o outro quase parado: continua sendo batida de um só')
+    assert.equal(judgeHit(n, new THREE.Vector3(0, 0, 1), slowBack, HEAD_ON_MIN).role, 'victim', 'eu quase parado, ele vindo')
+  })
+
   test('intervalo entre batidas do mesmo par', () => {
     const cd = new HitCooldown()
     assert.ok(cd.ready('x', 0))
     assert.ok(!cd.ready('x', 0.3))
     assert.ok(cd.ready('y', 0.3))
     assert.ok(cd.ready('x', 1))
+  })
+
+  test('ricochete: o dano é de quem empurrou, reduzido a cada repasse', () => {
+    const b = new PushChain()
+    assert.equal(b.ricochet('c', 0, 1, 0), null) // ninguém me empurrou
+    b.pushed('a', 0, 1, 5, 0) // A empurrou B para +x
+    assert.equal(b.ricochet('a', 1.2, 1, 0), null) // batendo em quem empurrou: a batida é minha
+    assert.equal(b.ricochet('c', 1.2, 0, 1), null) // C fora do sentido do empurrão: batida minha
+    assert.deepEqual(b.ricochet('c', 1.2, 1, 0.2), { owner: 'a', relay: 1 })
+    assert.equal(b.ricochet('d', 1.3, 1, 0), null) // o ricochete vale uma vez só
+    b.pushed('a', 0, 2, 5, 0)
+    assert.equal(b.ricochet('c', 2.01 + CHAIN_WINDOW, 1, 0), null) // passou o embalo
+    b.pushed('a', 0, 3, 0, 0)
+    assert.equal(b.ricochet('c', 3.1, 0, 0), null) // só dano, sem empurrão: nada a repassar
+    const c = new PushChain()
+    c.pushed('a', 1, 4, 0, -3) // B (empurrado por A) acertou C
+    assert.deepEqual(c.ricochet('d', 4.1, 0, -1), { owner: 'a', relay: 2 })
+    const last = new PushChain()
+    last.pushed('a', CHAIN_MAX, 5, 1, 0) // repasses demais: acaba a cadeia
+    assert.equal(last.ricochet('e', 5.1, 1, 0), null)
+    assert.ok(chainDamage(DAMAGE.smash, 1) < DAMAGE.smash)
+    assert.ok(chainDamage(DAMAGE.smash, 2) < chainDamage(DAMAGE.smash, 1))
   })
 })
 
@@ -227,6 +261,14 @@ describe('Protocolo de rede', () => {
     assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5, by: 'bot-2' }).by, 'bot-2')
     assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5, by: 'someone' }).by, null)
     assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5 }).by, null)
+  })
+
+  test('hit.chain/relay: repasse limitado a CHAIN_MAX', () => {
+    const out = validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5, chain: 'p1', relay: 2 })
+    assert.equal(out.chain, 'p1')
+    assert.equal(out.relay, 2)
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5, chain: 'p1', relay: 99 }).relay, 1)
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 5 }).relay, 0)
   })
 })
 
@@ -665,7 +707,23 @@ describe('Ultimate', () => {
     assert.ok(!d.claim('beto'), 'um item, um dono')
     assert.equal(d.phase, 'waiting')
     assert.equal(d.n, 1)
-    assert.ok(d.timer > ULT_INTERVAL - 1, 'o próximo vem 1 min depois de pegarem')
+    assert.ok(d.timer > ULT_INTERVAL - 1, 'o próximo vem um intervalo depois de pegarem')
+  })
+
+  test('o item aparece num lugar sorteado (sempre outro) e todos veem o mesmo', () => {
+    const spots = [{ x: -10, z: 4 }, { x: 12, z: -6 }, { x: 3, z: 9 }]
+    let i = 0
+    const host = new UltimateDirector(() => [0, 0, 0.5, 0.99][i++ % 4]), guest = new UltimateDirector()
+    const seen = []
+    for (let n = 0; n < 4; n++) {
+      for (let t = 0; t < ULT_INTERVAL + 1 && host.phase !== 'available'; t += 0.1) host.update(0.1, true, spots)
+      assert.ok(spots.some((p) => p.x === host.x && p.z === host.z), 'um dos lugares da lista')
+      assert.ok(guest.apply(host.snapshot()))
+      assert.deepEqual([guest.x, guest.z], [host.x, host.z], 'o convidado vê o mesmo lugar')
+      seen.push(`${host.x},${host.z}`)
+      host.claim('ana')
+    }
+    assert.ok(seen.every((p, k) => k === 0 || p !== seen[k - 1]), 'nunca repete o lugar anterior em seguida')
   })
 
   test('só o anfitrião muda de fase; os outros seguem o estado dele', () => {
@@ -679,12 +737,12 @@ describe('Ultimate', () => {
     assert.ok(!guest.apply({ ...host.snapshot(), n: -1 }), 'ciclo velho é ignorado')
   })
 
-  test('inventário: guarda, usa quando quiser, 1 min de recarga', () => {
+  test('inventário: guarda, usa quando quiser, 30 s de recarga', () => {
     const slot = new UltimateSlot()
     assert.ok(slot.canPickUp && !slot.ready)
     assert.ok(slot.give('overcharge'))
     assert.ok(!slot.canPickUp && !slot.give('overcharge'), 'uma vaga só')
-    for (let t = 0; t < 30; t += 0.1) slot.update(0.1)
+    for (let t = 0; t < 20; t += 0.1) slot.update(0.1)
     assert.ok(slot.ready, 'guardado não estraga')
     assert.equal(slot.activate(), 'overcharge')
     assert.equal(slot.active, 'overcharge')
@@ -692,10 +750,10 @@ describe('Ultimate', () => {
     let ended = false
     for (let t = 0; t < ULTIMATES.overcharge.duration + 0.2; t += 0.1) ended = slot.update(0.1) || ended
     assert.ok(ended && !slot.active, 'o poder acaba sozinho')
-    for (let t = 0; t < 30; t += 0.1) slot.update(0.1)
+    for (let t = 0; t < 10; t += 0.1) slot.update(0.1)
     slot.give('overcharge') // pegou outro no meio da recarga
     assert.ok(!slot.ready && slot.activate() === null, 'espera a recarga')
-    for (let t = 0; t < ULT_COOLDOWN - 30; t += 0.1) slot.update(0.1)
+    for (let t = 0; t < ULT_COOLDOWN - 16; t += 0.1) slot.update(0.1)
     assert.ok(slot.ready, 'recarga acabou, ainda dentro do prazo')
   })
 
@@ -704,7 +762,7 @@ describe('Ultimate', () => {
     const slot = new UltimateSlot()
     slot.give('overcharge')
     let event = null
-    for (let t = 0; t < ULT_STORE_TIME - 0.5; t += 0.1) event = slot.update(0.1) ?? event
+    for (let t = 0; t < storeTimeFor('overcharge') - 0.5; t += 0.1) event = slot.update(0.1) ?? event
     assert.equal(event, null)
     assert.ok(slot.ready, 'ainda dá para usar')
     for (let t = 0; t < 1; t += 0.1) event = slot.update(0.1) ?? event
@@ -816,6 +874,74 @@ describe('Onda de choque', () => {
     assert.ok(Math.abs(spec.duration - (spec.windup + spec.travel)) < 1e-9)
     assert.ok(ULT_KINDS.includes('shockwave') && ULT_KINDS.includes('overcharge'))
     assert.ok(ULT_STORE_TIME + Math.max(...ULT_KINDS.map((k) => ULTIMATES[k].duration)) <= ULT_INTERVAL)
+  })
+})
+
+describe('Emboscada', () => {
+  const spec = ULTIMATES.ambush
+
+  test('invisível até o aviso; sem apertar E, o tempo acaba e bate', () => {
+    assert.equal(spec.duration, spec.vanish + spec.windup)
+    const slot = new UltimateSlot()
+    slot.give('ambush')
+    assert.equal(slot.activate(), 'ambush')
+    assert.ok(slot.ghost)
+    slot.update(spec.vanish - 0.1)
+    assert.ok(slot.ghost, 'ainda invisível um pouco antes')
+    slot.update(0.2)
+    assert.ok(!slot.ghost && slot.active === 'ambush', 'aviso da batida: visível, poder ainda ativo')
+    assert.equal(slot.update(spec.windup), 'ended')
+    assert.ok(!slot.ghost)
+
+  })
+
+  test('encostou em alguém: reaparece e bate NA HORA (sem aviso); o poder acaba', () => {
+    const slot = new UltimateSlot()
+    slot.give('ambush')
+    slot.activate()
+    slot.update(1)
+    assert.ok(slot.strike())
+    assert.ok(!slot.ghost)
+    assert.equal(slot.active, null)
+    assert.ok(!slot.strike(), 'só bate uma vez')
+    assert.equal(slot.update(spec.windup + 0.01), null, 'o fim do tempo não bate de novo')
+  })
+
+  test('nocaute cancela: o poder em uso acaba sem terminar', () => {
+    const slot = new UltimateSlot()
+    slot.give('ambush')
+    slot.activate()
+    slot.stop()
+    assert.ok(!slot.ghost)
+    assert.equal(slot.update(10), null)
+  })
+
+  test('batida de área: dano e stun em quem está no raio, sem empurrão; protegido não leva', () => {
+    const hits = ambushStrikes(spec, 0, 0, [
+      { id: 'dentro', x: spec.radius - 1, z: 0, immune: false },
+      { id: 'fora', x: spec.radius + 3, z: 0, immune: false },
+      { id: 'protegido', x: 1, z: 1, immune: true },
+    ])
+    assert.deepEqual(hits.map((h) => h.id), ['dentro', 'protegido'])
+    const dentro = hits.find((h) => h.id === 'dentro')
+    assert.equal(dentro.damage, spec.damage)
+    assert.equal(dentro.stun, spec.stun)
+    assert.ok(!('dx' in dentro) && !('push' in dentro))
+    assert.deepEqual(hits.find((h) => h.id === 'protegido'), { id: 'protegido', damage: 0, stun: 0 })
+  })
+
+  test('protocolo: ghost no estado e slam na batida', () => {
+    const base = { t: 1, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0 }
+    assert.equal(validators.state({ ...base, ult: 'ambush', ghost: true }).ghost, true)
+    assert.equal(validators.state({ ...base, ult: 'ambush', ghost: 'sim' }).ghost, false)
+    assert.equal(validators.state({ ...base }).ghost, false)
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 24, stun: 1, slam: true }).slam, true)
+    assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: 24 }).slam, false)
+  })
+
+  test('cabe no intervalo do item', () => {
+    assert.ok(storeTimeFor('ambush') + spec.duration <= ULT_INTERVAL)
+    assert.ok(storeTimeFor('overcharge') > storeTimeFor('ambush'), 'a Emboscada não encurta o prazo dos outros')
   })
 })
 
@@ -983,7 +1109,7 @@ describe('Míssil', () => {
     const slot = new UltimateSlot()
     slot.give('missile')
     let event = null
-    for (let t = 0; t < ULT_STORE_TIME + 1; t += 0.1) event = slot.update(0.1) ?? event
+    for (let t = 0; t < storeTimeFor('missile') + 1; t += 0.1) event = slot.update(0.1) ?? event
     assert.equal(event, 'expired')
   })
 
@@ -993,8 +1119,8 @@ describe('Míssil', () => {
 })
 
 describe('Partida (abates)', () => {
-  test('10 minutos', () => {
-    assert.equal(MATCH_TIME, 600)
+  test('6 minutos', () => {
+    assert.equal(MATCH_TIME, 360)
     assert.equal(formatClock(300), '5:00')
     assert.equal(formatClock(59.2), '1:00')
     assert.equal(formatClock(9), '0:09')
@@ -1099,6 +1225,8 @@ describe('Progressão (níveis)', () => {
     assert.equal(xpForHit(0, 1, 10), 0)
     assert.equal(xpForKill(5, 5), XP_EXTRA.kill)
     assert.equal(xpForKill(5, 7), 45)
+    assert.equal(xpForAssist(5, 5), 12, 'assistência vale 40% do abate')
+    assert.ok(xpForAssist(5, 7) < xpForKill(5, 7) && xpForAssist(5, 7) > xpForAssist(5, 5))
     assert.equal(xpForKill(10, 1), 15, 'piso do bônus de abate')
   })
 
@@ -1461,5 +1589,101 @@ describe('Bots: cérebro (bots.js)', () => {
       }
       assert.ok(contacts >= 3, `${contacts} batidas em 10 s`)
     })
+  })
+})
+
+describe('Batida de frente: o mesmo dano para os dois', () => {
+  // Simula os dois lados: A (menor id) e B (maior id), cada um com o seu registro
+  const pair = () => ({ a: new RamLedger(), b: new RamLedger() })
+  const hit = (damage, mutual = false) => ({ damage, mutual })
+  const A = { iAmLower: true }, B = { iAmLower: false }
+
+  test('os dois acham que é empate: o dano do menor id vale para os dois', () => {
+    const { a, b } = pair()
+    const sent = a.sending('B', 10, 1, { tie: true })
+    assert.deepEqual(sent, { damage: 10, mutual: true, selfApply: true })
+    assert.equal(b.noteTie('A', 1), null)
+    assert.deepEqual(b.received('A', hit(10, true), 1.1, B), { apply: 10, echo: null })
+  })
+
+  test('menor id acha que bateu e o maior id acha empate: o maior devolve o eco', () => {
+    const { a, b } = pair()
+    assert.deepEqual(a.sending('B', 15, 1, { tie: false }), { damage: 15, mutual: false, selfApply: false })
+    assert.equal(b.noteTie('A', 1), null) // ainda não chegou
+    assert.deepEqual(b.received('A', hit(15), 1.1, B), { apply: 15, echo: 15 })
+    assert.deepEqual(a.received('B', hit(15, true), 1.2, A), { apply: 15, echo: null }, 'o menor id leva o mesmo')
+  })
+
+  test('mesma coisa se a batida chega antes de o maior id perceber o empate', () => {
+    const { a, b } = pair()
+    a.sending('B', 15, 1, { tie: false })
+    assert.deepEqual(b.received('A', hit(15), 1.1, B), { apply: 15, echo: null })
+    assert.equal(b.noteTie('A', 1.2), 15, 'eco assim que percebe o empate')
+    assert.equal(b.noteTie('A', 1.3), null, 'só uma vez')
+  })
+
+  test('os dois acham que bateram: vale o dano do menor id para os dois', () => {
+    const { a, b } = pair()
+    a.sending('B', 15, 1, { tie: false })
+    assert.deepEqual(a.received('B', hit(10), 1.1, A), { apply: 15, echo: null }, 'ignora o dano dele e leva o meu')
+    assert.deepEqual(a.received('B', hit(10), 1.2, A), { apply: 0, echo: null }, 'só uma vez')
+    assert.deepEqual(b.received('A', hit(15), 1.1, B), { apply: 15, echo: null }, 'o maior id leva o dano do menor')
+  })
+
+  test('o maior id bateu primeiro (chega antes): o menor repete o dano dele', () => {
+    const { a } = pair()
+    assert.deepEqual(a.received('B', hit(10), 1, A), { apply: 10, echo: null })
+    assert.deepEqual(a.sending('B', 15, 1.1, { tie: false }), { damage: 10, mutual: true, selfApply: false })
+  })
+
+  test('batida só de um lado continua só de um lado; a janela expira', () => {
+    const { a, b } = pair()
+    assert.deepEqual(b.received('A', hit(15), 1, B), { apply: 15, echo: null })
+    assert.deepEqual(a.received('B', hit(10), 1, A), { apply: 10, echo: null })
+    const late = new RamLedger()
+    late.sending('B', 15, 1, { tie: false })
+    assert.deepEqual(late.received('B', hit(10), 5, A), { apply: 10, echo: null }, 'outra batida, bem depois')
+  })
+})
+
+describe('Estatísticas de fim de partida (matchStats.js)', () => {
+  const ranked = [
+    { id: 'a', name: 'Ana', kills: 6, assists: 2, deaths: 2 },
+    { id: 'b', name: 'Bo, "B"', kills: 1, assists: 0, deaths: 0 },
+  ]
+
+  test('KDA e taxas por minuto', () => {
+    assert.equal(kda(6, 2, 2), 4)
+    assert.equal(kda(1, 0, 0), 1, 'sem mortes não divide por zero')
+    const [a] = buildStats(ranked, { seconds: 600, levelOf: () => 3 })
+    assert.equal(a.kda, 4)
+    assert.equal(a.killsPerMin, 0.6)
+    assert.equal(a.deathsPerMin, 0.2)
+    assert.equal(a.level, 3)
+  })
+
+  test('relatório: totais e balanceamento anexado', () => {
+    const r = buildReport(buildStats(ranked, { seconds: 600 }), { seconds: 600, balance: { x: 1 } })
+    assert.equal(r.totals.deaths, 2)
+    assert.equal(r.totals.deathsPerMin, 0.2)
+    assert.equal(r.totals.avgSecondsBetweenDeaths, 300)
+    assert.deepEqual(r.balance, { x: 1 })
+    assert.equal(r.players.length, 2)
+  })
+
+  test('tempo em cada nível; quem sai para de contar', () => {
+    const t = new LevelTimer()
+    t.update('a', 1, 0)
+    t.update('a', 1, 40)
+    t.update('a', 2, 50)
+    t.update('a', 3, 80)
+    t.update('a', 3, 100)
+    assert.deepEqual(t.timesOf('a'), { 1: 50, 2: 30, 3: 20 })
+    t.update('b', 1, 0)
+    t.update('b', 1, 30) // saiu aqui
+    assert.deepEqual(t.timesOf('b'), { 1: 30 })
+    assert.deepEqual(t.timesOf('ninguem'), {})
+    t.reset()
+    assert.deepEqual(t.timesOf('a'), {})
   })
 })

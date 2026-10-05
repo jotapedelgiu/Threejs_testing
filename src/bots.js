@@ -98,6 +98,7 @@ const ULT_RANGE = {
   overcharge: [0, 6],  // raio da tempestade é 8: usa com o alvo bem dentro
   shockwave: [3, 17],  // faixa de 22 m
   missile: [6, 40],    // cruza o mapa
+  ambush: [0, 16],     // some e vai atrás de alguém; reaparece perto dele
 }
 const MISSILE_SPEED = 45 // m/s (ultimate.js): para mirar na frente do alvo
 
@@ -314,16 +315,16 @@ export class BotBrain {
       }
     }
 
-    // Ultimate do centro: o objetivo mais valioso. Chega antes de aparecer
-    const item = world.ult
+    // Ultimate: o objetivo mais valioso. Chega antes de aparecer
+    const item = world.ult && { ...world.ult, x: world.ult.x ?? 0, z: world.ult.z ?? 0 }
     if (item && !ult.stored && !ult.active) {
-      const d = Math.hypot(self.x, self.z)
+      const d = Math.hypot(self.x - item.x, self.z - item.z)
       const travel = d / world.maxSpeed + 1.5
       if (item.phase === 'available') {
-        add(w.ult * closeness(d, 30), { key: 'ult', mode: 'ult', x: 0, z: 0 })
+        add(w.ult * closeness(d, 30), { key: 'ult', mode: 'ult', x: item.x, z: item.z })
       } else if (item.phase === 'warning' && item.timer < travel + 2) {
-        // Espera do lado do centro (não em cima: o item aparece e ele passa)
-        add(w.ult * 0.75 * closeness(d, 30), { key: 'ult', mode: 'ult', x: 0, z: 0, stopInside: 4 })
+        // Espera perto do lugar (não em cima: o item aparece e ele passa)
+        add(w.ult * 0.75 * closeness(d, 30), { key: 'ult', mode: 'ult', x: item.x, z: item.z, stopInside: 4 })
       }
     }
 
@@ -450,7 +451,7 @@ export class BotBrain {
       return d >= min && d <= max
     })
     const expiring = ult.storedLeft < 4 // vai perder: usa no que tiver
-    if (kind === 'overcharge') return inRange.length > 0 || (expiring && alive.some((e) => dist(self, e) < 10))
+    if (kind === 'overcharge' || kind === 'ambush') return inRange.length > 0 || (expiring && alive.some((e) => dist(self, e) < 10))
     // Onda de choque e Míssil: precisa de alguém na mira
     const aim = expiring ? this.skill.ultAim * 2 : this.skill.ultAim
     return inRange.some((e) => Math.abs(wrapAngle(headingTo(self.x, self.z, e.x, e.z) - self.yaw)) < aim)

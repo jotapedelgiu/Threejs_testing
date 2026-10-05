@@ -1,4 +1,4 @@
-// Regra de vitória: partida de 10 minutos; ganha quem tiver mais abates (K.O.
+// Regra de vitória: partida de 6 minutos; ganha quem tiver mais abates (K.O.
 // dados em outros jogadores). Sem dependências, para poder ser testado no Node.
 //
 // Quem leva o crédito do abate é quem causou dano por último na vítima (até
@@ -11,7 +11,7 @@
 // (koBy). Os abates de X = soma de koBy[X] de todo mundo. Mensagem perdida se
 // corrige na próxima, e quem entra no meio recebe o histórico inteiro.
 
-export const MATCH_TIME = 600 // s (10 min)
+export const MATCH_TIME = 360 // s (6 min)
 export const KILL_CREDIT = 8  // s: dano até esse tempo antes do nocaute dá o abate
 
 /** Mortes e "quem me nocauteou", do ponto de vista da vítima. */
@@ -23,6 +23,7 @@ export class KillTracker {
   reset() {
     this.deaths = 0
     this.koBy = {}        // id de quem abateu -> quantas vezes
+    this.assisters = []   // quem levou assistência no último abate sofrido
     this.asBy = {}        // id de quem ajudou (bateu em mim, outro abateu) -> quantas vezes
     this.xpBy = {}        // id de quem bateu -> XP que ele ganhou em mim (vira nível dele)
     this.koAt = {}        // id de quem me abateu -> instante do último abate dele
@@ -50,10 +51,12 @@ export class KillTracker {
   /**
    * Fui nocauteado. Quem bateu por último leva o abate; quem também bateu
    * dentro da janela leva uma assistência.
-   * @returns quem leva o abate (ou null: ninguém por perto)
+   * @returns quem leva o abate (ou null: ninguém por perto); quem levou
+   *   assistência fica em `assisters` (para o bônus de XP)
    */
   knockedOut(now) {
     this.deaths++
+    this.assisters = []
     const hit = this.lastHit
     const hits = this.hits
     this.lastHit = null
@@ -62,7 +65,10 @@ export class KillTracker {
     this.koBy[hit.by] = (this.koBy[hit.by] ?? 0) + 1
     this.koAt[hit.by] = now
     for (const [id, at] of Object.entries(hits)) {
-      if (id !== hit.by && now - at <= KILL_CREDIT) this.asBy[id] = (this.asBy[id] ?? 0) + 1
+      if (id !== hit.by && now - at <= KILL_CREDIT) {
+        this.asBy[id] = (this.asBy[id] ?? 0) + 1
+        this.assisters.push(id)
+      }
     }
     return hit.by
   }

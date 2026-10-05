@@ -6,12 +6,13 @@ import { createToonMaterial } from './toon.js'
 import { ULTIMATES } from './ultimate.js'
 
 // Visual do ultimate (só desenho; as regras ficam em ultimate.js):
-//  - feixe de luz no centro da arena: fraco no aviso, forte com o item lá
+//  - feixe de luz onde o item vai estar: fraco no aviso, forte com o item lá
 //  - o item (cristal elétrico girando) enquanto ninguém pegou
 //  - o círculo da tempestade em volta de cada carro com a Sobrecarga ativa
 //  - raios do dono até cada alvo atingido
-//  - a Onda de choque: faixa no chão piscando (preparação) e a frente da
-//    onda correndo por ela (disparo)
+//  - a Onda de choque: faixa no chão piscando (preparação) e, no disparo, 3
+//    bastões de espinhos que saem do chão e correm pela faixa empurrando quem
+//    estiver nela (afundam de volta no fim)
 //  - o Míssil voando e o rastro reto (verde, como a lentidão do LoL) que deixa
 //    lento, com contorno nas bordas e na ponta
 
@@ -27,6 +28,14 @@ const TRAIL_COLOR = '#4cff6a'
 const TRAIL_FADE = 1.5 // s finais em que o rastro vai sumindo
 const WAVE_FADE = 0.35 // s da faixa sumir depois que a onda chega ao fim
 const WAVE_COLOR = new THREE.Color('#ffb347')
+const SLAM_COLOR = '#b86bff' // Emboscada
+const MAX_BURSTS = 4
+const BURST_LIFE = 0.45 // s do estouro abrir e sumir
+const SPIKES = 3           // bastões lado a lado na faixa
+const SPIKE_RISE = 0.14     // s para um bastão sair do chão
+const SPIKE_STAGGER = 0.05  // s: o do meio sai primeiro, os dos lados logo depois
+const SPIKE_LEAN = 0.35     // rad: inclinados para a frente, empurrando
+const SPIKE_SPIN = 9        // rad/s girando enquanto correm
 const tmpA = new THREE.Vector3()
 const tmpB = new THREE.Vector3()
 
@@ -71,6 +80,33 @@ export class UltimateView {
       return group
     })
 
+    // Emboscada: círculo de aviso no chão enquanto o dono reaparece, e o
+    // estouro da batida (anel que se abre e some)
+    this.slamMaterial = this.ringMaterial(0.8)
+    this.slamFillMaterial = this.ringMaterial(0.08)
+    for (const m of [this.slamMaterial, this.slamFillMaterial]) m.color.set(SLAM_COLOR)
+    this.slamMeshes = []
+    this.slams = Array.from({ length: MAX_STORMS }, () => {
+      const group = new THREE.Group()
+      for (const m of [new THREE.Mesh(ringGeometry, this.slamMaterial), new THREE.Mesh(fillGeometry, this.slamFillMaterial)]) {
+        m.rotation.x = -Math.PI / 2
+        group.add(m)
+        this.slamMeshes.push(m)
+      }
+      group.visible = false
+      scene.add(group)
+      return group
+    })
+    this.bursts = Array.from({ length: MAX_BURSTS }, () => {
+      const mesh = new THREE.Mesh(ringGeometry, this.ringMaterial(0))
+      mesh.material.color.set(SLAM_COLOR)
+      mesh.rotation.x = -Math.PI / 2
+      mesh.visible = false
+      scene.add(mesh)
+      this.slamMeshes.push(mesh)
+      return { mesh, age: Infinity, radius: 1 }
+    })
+
     // Ondas de choque: cada uma é um grupo virado para a direção da faixa
     // (+Z local = para a frente), com: faixa de aviso, rastro (o que a onda
     // já percorreu) e a frente brilhante. Materiais próprios por onda
@@ -91,7 +127,7 @@ export class UltimateView {
         this.waveMeshes.push(m)
         return m
       }
-      const parts = { group, warn: null, trail: null, front: null, edges: [], cast: null, age: Infinity }
+      const parts = { group, warn: null, trail: null, front: null, edges: [], spikes: [], cast: null, age: Infinity }
       group.position.y = 0.06
       group.visible = false
       scene.add(group)
@@ -160,9 +196,31 @@ export class UltimateView {
     })
   }
 
+  /**
+   * Modelo do bastão de espinhos (o mesmo da arena, pé no chão e centrado):
+   * vira a frente da Onda de choque. Sem ele, a frente é uma faixa brilhante.
+   */
+  setSpikeModel(template) {
+    const box = new THREE.Box3().setFromObject(template)
+    this.spikeHeight = box.max.y - box.min.y
+    for (const w of this.waves) {
+      for (const s of w.spikes) w.group.remove(s.pivot)
+      w.spikes = Array.from({ length: SPIKES }, (_, i) => {
+        // pivot no pé: a inclinação gira em torno da base
+        const pivot = new THREE.Group()
+        const model = template.clone(true)
+        model.rotation.y = Math.random() * Math.PI * 2
+        pivot.add(model)
+        pivot.visible = false
+        w.group.add(pivot)
+        return { pivot, model, delay: i === (SPIKES - 1) / 2 ? 0 : SPIKE_STAGGER }
+      })
+    }
+  }
+
   /** Malhas que o contorno deve ignorar (transparentes / brilho). */
   get meshes() {
-    return [this.beam, this.pad, this.boltLines, ...this.stormMeshes, ...this.waveMeshes, ...this.trailMeshes]
+    return [this.beam, this.pad, this.boltLines, ...this.stormMeshes, ...this.slamMeshes, ...this.waveMeshes, ...this.trailMeshes]
   }
 
   /** Linhas grossas medem em pixels: chamar ao criar e ao redimensionar. */
@@ -186,6 +244,15 @@ export class UltimateView {
     w.group.visible = true
   }
 
+  /** Estouro da batida da Emboscada em `position`, abrindo até `radius`. */
+  burst(position, radius) {
+    const b = this.bursts.reduce((oldest, x) => (x.age > oldest.age ? x : oldest))
+    b.age = 0
+    b.radius = radius
+    b.mesh.position.set(position.x, 0.08, position.z)
+    b.mesh.visible = true
+  }
+
   /** Raio do ponto `from` até `to` (posições no mundo). */
   bolt(from, to) {
     if (this.bolts.length >= MAX_BOLTS) this.bolts.shift()
@@ -197,9 +264,10 @@ export class UltimateView {
    * @param {{ phase: string, storms: { position: THREE.Vector3, radius: number }[], missiles: import('./ultimate.js').MissileShot[] }} state
    *   storms = carros com a Sobrecarga ativa; missiles = mísseis voando ou com rastro
    */
-  update(dt, { phase, storms, missiles = [] }) {
+  update(dt, { phase, x = 0, z = 0, storms, missiles = [], slams = [] }) {
     this.time += dt
     const t = this.time
+    this.beacon.position.set(x, 0, z)
 
     // Centro: aviso = feixe fraco piscando; item lá = feixe forte + cristal
     const warning = phase === 'warning', available = phase === 'available'
@@ -223,6 +291,30 @@ export class UltimateView {
     const stormBlink = 0.5 + 0.5 * Math.sin(t * 30) // pisca rápido, como a faixa da onda de choque
     this.stormMaterial.opacity = 0.5 + 0.4 * stormBlink
     this.stormFillMaterial.opacity = 0.12 + 0.2 * stormBlink
+
+    // Emboscada: círculo de aviso piscando rápido em cada dono reaparecendo
+    slams.forEach(({ position, radius }, i) => {
+      const g = this.slams[i]
+      if (!g) return
+      g.visible = true
+      g.position.set(position.x, 0.05, position.z)
+      g.scale.setScalar(radius)
+    })
+    for (let i = slams.length; i < this.slams.length; i++) this.slams[i].visible = false
+    const slamBlink = 0.5 + 0.5 * Math.sin(t * 40)
+    this.slamMaterial.opacity = 0.5 + 0.45 * slamBlink
+    this.slamFillMaterial.opacity = 0.12 + 0.25 * slamBlink
+    for (const b of this.bursts) {
+      if (!b.mesh.visible) continue
+      b.age += dt
+      if (b.age >= BURST_LIFE) {
+        b.mesh.visible = false
+        continue
+      }
+      const k = b.age / BURST_LIFE
+      b.mesh.scale.setScalar(b.radius * (0.3 + 0.7 * k))
+      b.mesh.material.opacity = 0.95 * (1 - k)
+    }
 
     this.updateWaves(dt)
     this.updateMissiles(missiles)
@@ -272,6 +364,7 @@ export class UltimateView {
         for (const e of w.edges) e.material.opacity = 0.5 + 0.4 * blink
         w.trail.material.opacity = 0
         w.front.material.opacity = 0
+        for (const s of w.spikes) s.pivot.visible = false
         continue
       }
       if (!w.launched) {
@@ -285,8 +378,32 @@ export class UltimateView {
       w.trail.scale.z = Math.max(front / length, 0.001)
       w.trail.material.opacity = 0.35 * fade
       w.front.position.z = Math.max(front - 0.6, 0)
-      w.front.material.opacity = 0.95 * fade
+      // Com os bastões, a frente são eles (a faixa brilhante só sem o modelo)
+      w.front.material.opacity = w.spikes.length ? 0 : 0.95 * fade
+      this.poseSpikes(w, dt, front, w.age - windup, w.age - end)
     }
+  }
+
+  // Bastões da Onda de choque: saem do chão (com um pulinho) no começo da
+  // faixa, correm com a frente da onda inclinados para a frente, girando, e
+  // afundam de volta quando ela chega ao fim. `since` = s desde o disparo;
+  // `after` = s desde o fim do percurso (< 0 = ainda correndo)
+  poseSpikes(w, dt, front, since, after) {
+    const height = this.spikeHeight
+    const spacing = w.spec.width / SPIKES
+    w.spikes.forEach((s, i) => {
+      const t = since - s.delay
+      s.pivot.visible = t > 0
+      if (t <= 0) return
+      // Subida com passada do ponto (easeOutBack) e descida linear no fim
+      const k = Math.min(1, t / SPIKE_RISE)
+      const rise = 1 + 2.2 * (k - 1) ** 3 + 1.2 * (k - 1) ** 2
+      const sink = after > 0 ? Math.min(1, after / WAVE_FADE) : 0
+      const up = Math.min(rise, 1.15) * (1 - sink)
+      s.pivot.position.set((i - (SPIKES - 1) / 2) * spacing, -height * (1 - up), front)
+      s.pivot.rotation.x = SPIKE_LEAN * k * (1 - sink) // topo para +Z: empurrando
+      s.model.rotation.y += SPIKE_SPIN * (1 - sink) * dt
+    })
   }
 
   // Cada raio é uma linha quebrada, sorteada de novo a cada quadro (tremula)

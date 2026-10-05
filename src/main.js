@@ -7,8 +7,9 @@ import { Background, Sun, Arena } from './environment.js'
 import { GroupCamera } from './groupCamera.js'
 import { ControlPanel } from './panel.js'
 import { ScoreUI, PlayerHud, CarTags, ItemArrows, UltimateBanner, MatchClock, KillFeed } from './hud.js'
+import { buildStats, buildReport, LevelTimer } from './matchStats.js'
 import { KillTracker, MATCH_TIME, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock } from './match.js'
-import { levelFor, levelProgress, damageScale, scaleDamage, maxHealthFor, xpForHit, xpForKill, repeatScale } from './progression.js'
+import { levelFor, levelProgress, damageScale, scaleDamage, maxHealthFor, xpForHit, xpForKill, xpForAssist, repeatScale } from './progression.js'
 import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
 import { readDriveInput, isDown, wasPressed } from './input.js'
@@ -18,6 +19,7 @@ import { RemotePlayers } from './remotePlayers.js'
 import { measureFootprint, testCars, testArenaWalls } from './collision.js'
 import { Orbs, orbCountFor } from './orbs.js'
 import { SparkEffects, findPoleTip } from './sparks.js'
+import { buildFunnyCar } from './shapes.js'
 import { SpikedBats, extractProp, placeBats } from './bats.js'
 import { TireWalls, placeTireWalls, prepareTireWall } from './tireWalls.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from './spawns.js'
@@ -27,15 +29,15 @@ import { Presence } from './presence.js'
 import { MenuUI } from './menu.js'
 import { newRoomCode, normalizeCode, hostOf } from './lobby.js'
 import { pickLivery, readColors, swatch, setBoostGlow, setUltimateGlow, MATERIAL_GROUPS, DEFAULT_GROUP, materialGroup } from './paint.js'
-import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, ULT_STORE_TIME } from './ultimate.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ambushStrikes, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, storeTimeFor } from './ultimate.js'
 import { UltimateView } from './ultimateView.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, maxZonesFor } from './medkit.js'
 import { MedkitView } from './medkitView.js'
 import { TrainingDummy, TestPanel, localNet, DUMMY_SPOTS, TEST_SPAWN } from './testRange.js'
 import { BotBrain, BOT_SKILLS, BOT_KINDS, BOT_NAMES } from './bots.js'
 import {
-  judgeHit, impactTier, tierOfDamage, DAMAGE, MIN_IMPULSE, HitCooldown, Health, MAX_HEALTH,
-  BOOST_PUSH, WALL_DAMAGE, WALL_DAMAGE_WINDOW, WALL_DAMAGE_MIN_SPEED, SPIKE_MIN_SPEED,
+  judgeHit, impactTier, tierOfDamage, DAMAGE, damageParams, MIN_IMPULSE, HEAD_ON_MIN, HitCooldown, RamLedger, Health, MAX_HEALTH,
+  PushChain, chainDamage, CHAIN_FALLOFF, BOOST_PUSH, WALL_DAMAGE, WALL_DAMAGE_WINDOW, WALL_DAMAGE_MIN_SPEED, SPIKE_MIN_SPEED,
 } from './damage.js'
 
 // Ponto de entrada: monta as peças (cena, câmera, painel, rede) e contém as
@@ -57,7 +59,8 @@ const MAX_BOOSTS = 2 // estoque de boosts (turbo é forte: precisa ser raro)
 // Bastões com espinhos
 const BAT_URL = `${import.meta.env.BASE_URL}models/Bastao.glb`
 const BAT_COUNT = 7
-const BAT_RADIUS = 0.7   // m: corpo + boa parte dos espinhos
+const BOOST_REACH = 0.25 // m: com boost o carro acerta um pouco antes de encostar
+const BAT_RADIUS = 0.7  // m: corpo + boa parte dos espinhos
 const BAT_BOUNCE = 1     // ricochete do carro no bastão (espinho repele forte)
 const BAT_KEEP_CLEAR = 12 // m livres no centro, onde os carros nascem
 const BAT_SPACING = 12   // m mínimos entre bastões
@@ -75,9 +78,12 @@ const SPAWN_INSET_X = 6       // m dos cantos até a mureta
 const SPAWN_INSET_Z = 5
 const SPAWN_CLEAR = 7         // m livres em volta dos cantos (bastões e pneus não ficam ali)
 const NO_INPUT = { throttle: 0, steer: 0 }
-// Bots em toda partida online (bots.js): o anfitrião simula e manda o estado
-// deles para a sala. Uma dificuldade por bot
-const MATCH_BOTS = ['easy', 'normal', 'normal', 'hard']
+// Bots na partida online (bots.js): o anfitrião simula e manda o estado deles
+// para a sala. A partida tem MATCH_CARS carros no total: os bots completam o que
+// falta depois dos jogadores. Uma dificuldade por bot, nesta ordem
+const MATCH_CARS = 8
+const BOT_KINDS_ORDER = ['easy', 'normal', 'normal', 'hard', 'normal', 'hard', 'easy', 'normal']
+const matchBots = (humans) => BOT_KINDS_ORDER.slice(0, Math.max(0, MATCH_CARS - humans))
 
 const savedSettings = fetch(SETTINGS_URL, { cache: 'no-store' })
   .then((r) => (r.ok ? r.json() : null))
@@ -159,7 +165,8 @@ const orbs = new Orbs(scene, {
 
 // Esferas conforme quantos estão na sala (eu + os outros): todos contam igual
 function updateOrbCount() {
-  orbs.setCount(orbCountFor(1 + roster.size + (testMode ? 0 : MATCH_BOTS.length)))
+  const humans = 1 + roster.size
+  orbs.setCount(orbCountFor(testMode ? humans : Math.max(MATCH_CARS, humans)))
 }
 
 // Troca para o mapa de outro jogador (o dele é mais antigo)
@@ -203,6 +210,7 @@ for (const v of medViews) outline.skipInNormalPass.push(...v.meshes)
 const panel = new ControlPanel({
   background, sun, arena, camera: groupCamera, sparks, batPaint, tirePaint, quality,
   onQualityChange: applyQuality, onRerollLivery: rerollLivery,
+  onEndMatch: () => endMatch(),
 })
 const netStatus = document.getElementById('net-status')
 // Medidor de FPS: liga no painel (Desempenho) ou com ?fps na URL
@@ -256,7 +264,7 @@ let ultNews = null      // anúncio rápido na faixa: { title, sub, tone, until 
 const medkit = new MedkitDirector()
 const zoneHeal = new ZoneHealing()
 let medResend = 0       // anfitrião: reenvia o estado de tempos em tempos
-// Partida (match.js): 10 min, ganha quem tiver mais abates. O placar sai do
+// Partida (match.js): 6 min, ganha quem tiver mais abates. O placar sai do
 // "quem me nocauteou" (koBy) de cada um; o relógio é do anfitrião
 const kills = new KillTracker() // minhas mortes e quem me abateu
 let matchLeft = MATCH_TIME      // s até acabar
@@ -266,6 +274,8 @@ const departed = new Map()      // quem saiu no meio: { name, koBy, deaths } (os
 // dano e mais vida). O nível de todos sai do placar, recalculado a cada passo
 let damageTally = new Map()     // id -> XP ganho
 let myLevel = 1
+const levelTimer = new LevelTimer() // só para o relatório de teste (matchStats.js)
+let playTime = 0 // s de partida valendo (sem a contagem)
 const levelOf = (id) => levelFor(damageTally.get(id) ?? 0)
 let healShown = 0       // cura acumulada ainda não mostrada ("+N VIDA" a cada 1 s)
 let healPopupTimer = 0
@@ -278,14 +288,25 @@ const hitCooldown = new HitCooldown()
 // Batidas que EU anunciei como agressor (para não aplicar o empurrão do outro
 // por cima, quando os dois se acharam agressores da mesma batida)
 const hitsSent = new HitCooldown()
+// Batida de frente entre jogadores: o dano é igual para os dois (damage.js)
+const rams = new RamLedger()
+// Batida entre carros (não golpe de ultimate nem de bot): entra na conta da batida de frente
+const isRam = (hit) => !hit.by && !hit.chain && !hit.zap && !hit.rocket && !hit.blast && !hit.slam
+// Quem me empurrou por último: se eu bater em alguém logo depois, o dano é dele (damage.js)
+const pushChain = new PushChain()
 const batCooldown = new HitCooldown() // por bastão: um choque não conta várias vezes
 const tmpImpulse = new THREE.Vector3()
 
 // --- Carregamento do carro -----------------------------------------------------
-new GLTFLoader().loadAsync(MODEL_URL).then(
+// Forma alternativa do carrinho (só local, não vai pela rede): ?forma na URL
+const ALT_SHAPE = new URLSearchParams(location.search).has('forma')
+const loadCarModel = ALT_SHAPE
+  ? () => Promise.resolve({ scene: buildFunnyCar(carMaterials.map((m) => m.material)) })
+  : () => new GLTFLoader().loadAsync(MODEL_URL)
+loadCarModel().then(
   (gltf) => {
     const model = gltf.scene
-    toonify(model, (source) => {
+    if (!ALT_SHAPE) toonify(model, (source) => {
       const name = source.name.trim()
       const group = materialGroup(name)
       if (group === -1) console.warn(`Material "${name}" sem grupo; usando "${MATERIAL_GROUPS[DEFAULT_GROUP].name}"`)
@@ -302,7 +323,8 @@ new GLTFLoader().loadAsync(MODEL_URL).then(
     // Cápsula de colisão: contorno do carro visto de cima, com ele na origem
     car.root.updateMatrixWorld(true)
     footprint = measureFootprint(model)
-    poleTip = findPoleTip(model, car.body)
+    const poleMarker = model.getObjectByName('poleTip')
+    poleTip = poleMarker ? car.body.worldToLocal(poleMarker.getWorldPosition(new THREE.Vector3())) : findPoleTip(model, car.body)
     car.reset() // a posição de verdade é escolhida quando a partida começa
 
     panel.addCarControls(car.params)
@@ -335,6 +357,7 @@ new GLTFLoader().loadAsync(BAT_URL).then(
     const template = extractProp(gltf.scene, 'Bastao')
     toonify(template, (source) => (source.name.startsWith('Bastao-espinhos') ? batPaint.spikes : batPaint.base))
     bats = new SpikedBats(scene, template, { positions: batSpots, radius: BAT_RADIUS })
+    ultView.setSpikeModel(template) // a Onda de choque são bastões saindo do chão
   },
   (err) => console.error('Erro ao carregar o bastão:', err)
 )
@@ -371,18 +394,28 @@ function setNetStatus(peerCount) {
 // Fui atingido: o empurrão e o dano calculados por quem bateu valem para mim.
 // O empurrão só é ignorado se eu também anunciei essa batida como agressor
 // (os dois se acharam agressores): aí já apliquei o meu ricochete. O dano
-// vale sempre.
-function receiveHit(hit, attackerId) {
+// vale sempre. `creditId`: de quem é o dano (em batida em cadeia, quem
+// empurrou o carro que me acertou; senão o próprio `attackerId`)
+function receiveHit(hit, attackerId, creditId = attackerId) {
   const now = loop.simTime
   if (!hitsSent.recent(attackerId, now)) {
     hitCooldown.ready(attackerId, now)
     car.applyImpulse(new THREE.Vector3(hit.ix, 0, hit.iz))
   }
+  let damage = hit.damage
+  if (isRam(hit)) {
+    // Batida de frente: o dano que eu levo é o mesmo que o outro leva
+    const ram = rams.received(attackerId, hit, now, { iAmLower: net.selfId < attackerId })
+    damage = ram.apply
+    if (ram.echo !== null) net.sendHit({ target: attackerId, ix: 0, iz: 0, damage: ram.echo, mutual: true })
+    if (hit.mutual && damage) scoreUI.popup(car.root.position, tierOfDamage(damage), damage)
+  }
   if (hit.boosted) boostedUntil = now + WALL_DAMAGE_WINDOW
   if (hit.blast) blastUntil = now + WALL_DAMAGE_WINDOW
   if (hit.stun && !health.isShielded) stunUntil = Math.max(stunUntil, now + hit.stun)
-  kills.noteHit(attackerId, now) // se eu cair (até de parede/espinho), o abate é dele
-  takeDamage(hit.damage, attackerId)
+  if (!hit.mutual) pushChain.pushed(creditId, hit.relay ?? 0, now, hit.ix, hit.iz)
+  kills.noteHit(creditId, now) // se eu cair (até de parede/espinho), o abate é dele
+  takeDamage(damage, creditId)
 }
 
 // `by`: quem causou o dano (rende XP a ele, pelos níveis que eu enxergo no
@@ -398,6 +431,7 @@ function takeDamage(amount, by = null) {
     const killRepeat = repeatScale(kills.sinceKoBy(kills.lastHit?.by, now)) // antes de registrar este abate
     const killer = kills.knockedOut(now)
     if (killer) kills.noteXp(killer, Math.round(xpForKill(levelOf(killer), myLevel) * killRepeat))
+    if (killer) for (const id of kills.assisters) kills.noteXp(id, Math.round(xpForAssist(levelOf(id), myLevel) * killRepeat))
     if (killer) killFeed.add(playerName(killer), 'You')
     car.endBoost()
     deathSpot = { x: car.root.position.x, z: car.root.position.z }
@@ -522,6 +556,8 @@ function beginMatch(map, late = false) {
   health.reset()
   damageTally = new Map()
   myLevel = 1
+  levelTimer.reset()
+  playTime = 0
   boosts = 0
   ultClaimed = ultGot = -1
   ultNews = null
@@ -541,7 +577,10 @@ function beginMatch(map, late = false) {
     spawnAt(corners[cornerIndex(members, net.selfId)])
   }
   // Bots: quem cria é o anfitrião; nascem longe dos cantos (onde estão os jogadores)
-  if (!testMode && !late && amHost()) MATCH_BOTS.forEach((kind, i) => addBot(kind, `bot-${i + 1}`, corners))
+  if (!testMode && !late && amHost()) {
+    const humans = 1 + [...roster.values()].filter((r) => r.phase === 'lobby' || r.phase === 'playing').length
+    matchBots(humans).forEach((kind, i) => addBot(kind, `bot-${i + 1}`, corners))
+  }
   presence.scale = 0 // aparece com "pop"
   net.sendHello(hello()) // agora estou jogando
 }
@@ -621,9 +660,11 @@ function startMultiplayer() {
     onHit(hit, sender) {
       // Batida de um bot: o anfitrião manda, mas quem bateu foi o bot
       const attackerId = hit.by && sender === hostId() ? hit.by : sender
+      // Batida em cadeia: quem bateu tinha sido empurrado; o dano é de quem empurrou
+      const creditId = hit.chain ?? attackerId
       // Alguém acertou um bot que eu simulo (sou o anfitrião): aplico nele
       const bot = dummies.get(hit.target)
-      if (bot && inMatch()) damageDummy(bot, hit, attackerId)
+      if (bot && inMatch()) damageDummy(bot, hit, creditId)
       // O dano aparece em cima de quem levou a batida, para todo mundo ver
       const position = positionOf(hit.target)
       if (hit.zap) {
@@ -636,9 +677,11 @@ function startMultiplayer() {
       } else if (hit.blast) {
         if (position) scoreUI.popup(position, 'blast', hit.damage) // Onda de choque
       } else if (hit.damage && position) {
-        scoreUI.popup(position, hit.boosted ? 'turbo' : tierOfDamage(hit.damage, damageScale(levelOf(attackerId))), hit.damage)
+        // Em cadeia, a faixa sai do dano antes da redução
+        const full = hit.chain ? hit.damage / CHAIN_FALLOFF ** hit.relay : hit.damage
+        scoreUI.popup(position, hit.boosted ? 'turbo' : tierOfDamage(full, damageScale(levelOf(creditId))), hit.damage)
       }
-      if (hit.target === net.selfId && inMatch()) receiveHit(hit, attackerId)
+      if (hit.target === net.selfId && inMatch()) receiveHit(hit, attackerId, creditId)
     },
     // Bots da partida: o estado vem do anfitrião, como o de um jogador
     onBots({ list }, peerId) {
@@ -678,10 +721,11 @@ function startMultiplayer() {
 // Estado do carro de outro jogador (ou de um boneco do campo de testes)
 function handlePeerState(peerId, state) {
   if (!remotes) return // carro ainda carregando
-  const { player, liveryChanged, knockedOut, ultStarted, missilesFired: fired, killedBy } = remotes.applyState(peerId, state, performance.now() / 1000)
+  const { player, liveryChanged, knockedOut, ultStarted, slammed, missilesFired: fired, killedBy } = remotes.applyState(peerId, state, performance.now() / 1000)
   // Kill feed: quem abateu esse jogador desde o último estado
   for (const killer of killedBy) killFeed.add(killer === net.selfId ? 'You' : playerName(killer), playerName(peerId), killer === net.selfId)
   if (knockedOut) scoreUI.popup(player.car.position, 'ko')
+  if (slammed) showSlam(player.car.root.position)
   // Mísseis que ele disparou (contador no estado: não se perde nenhum)
   for (let i = 0; i < fired; i++) launchMissile(player.car.root.position, state.yaw, peerId)
   if (ultStarted) {
@@ -772,19 +816,36 @@ function collideBats(simTime) {
 
 // Batidas contra os outros. Cada jogador resolve só o próprio carrinho; quem
 // bateu aplica o próprio ricochete e manda o empurrão e o dano da vítima (a
-// vítima espera essa mensagem). Empate (ex.: de frente): cada um aplica só o
-// próprio ricochete e ninguém leva dano. Nocauteado não causa dano.
+// vítima espera essa mensagem). Empate (ex.: de frente): cada um aplica o
+// próprio ricochete e os dois levam o MESMO dano (RamLedger: quem tem o menor
+// id decide). Nocauteado não causa dano.
 function collideCars(simTime, wallTime) {
   if (health.isKO) return // sumido no nocaute: ninguém bate em mim
   for (const [peerId, { car: remote, ko }] of remotes.entries()) {
     if (!remote.hasState || ko) continue // o outro está sumido
     remote.sample(wallTime)
-    const hit = testCars(car.root.position, car.yaw, remote.root.position, remote.yaw, footprint)
+    const dummy = dummies.get(peerId) // boneco/bot que eu simulo (campo de testes ou anfitrião)
+    const boosting = car.isBoosting || dummy?.car.isBoosting
+    const hit = testCars(car.root.position, car.yaw, remote.root.position, remote.yaw, footprint, boosting ? BOOST_REACH : 0)
     if (!hit) continue
     car.separate(hit.normal, hit.depth)
+    // Emboscada: encostar em alguém invisível é a hora da batida de área (na
+    // hora; o contato em si não vira batida normal)
+    if (ultSlot.strike()) {
+      slamAmbush()
+      hitCooldown.ready(peerId, simTime)
+      hitsSent.ready(peerId, simTime)
+      continue
+    }
+    if (dummy?.ult?.strike()) {
+      botSlam(dummy)
+      dummy.hitCooldown.ready('eu', simTime)
+      hitCooldown.ready(peerId, simTime)
+      continue
+    }
 
-    const judged = judgeHit(hit.normal, car.velocity, remote.velocity)
-    const dummy = dummies.get(peerId) // boneco/bot que eu simulo (campo de testes ou anfitrião)
+    // Entre jogadores, os dois vindo um para cima do outro é batida de frente (mesmo dano para os dois)
+    const judged = judgeHit(hit.normal, car.velocity, remote.velocity, dummy ? Infinity : HEAD_ON_MIN)
     if (judged.role === 'victim') {
       // A força da batida é a dele vindo para cima de mim
       if (dummy) dummyHitsMe(dummy, hit.normal, remote.velocity.dot(hit.normal), simTime)
@@ -798,14 +859,40 @@ function collideCars(simTime, wallTime) {
     car.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
     // Empate com um bot: ele também ricocheteia (um jogador faria isso do lado dele)
     if (judged.role === 'tie' && dummy?.isBot) dummy.car.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(-impulse))
-    if (judged.role === 'tie' && !boosted) continue
+    const evenTie = judged.role === 'tie' && !boosted
+    const iAmLower = net.selfId < peerId
+    if (evenTie) {
+      if (dummy) continue // bots: sem dano no empate
+      if (!iAmLower) {
+        // O dano vem de quem tem o menor id; se ele já me bateu "normal", devolvo o eco
+        const echo = rams.noteTie(peerId, simTime)
+        if (echo !== null) net.sendHit({ target: peerId, ix: 0, iz: 0, damage: echo, mutual: true })
+        continue
+      }
+    }
     // Sem dano se eu estou nocauteado ou se o outro está fora/protegido
     const target = remotes.get(peerId)
-    const immune = health.isKO || target.ko || target.shield
-    const tier = boosted ? 'turbo' : impactTier(judged.impact)
-    const damage = immune || !tier ? 0 : scaleDamage(DAMAGE[tier], myLevel)
-    const push = impulse * (boosted ? BOOST_PUSH : 1) // a vítima vai no sentido oposto
-    net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted })
+    const immune = health.isKO || target.ko || target.shield || (evenTie && health.isShielded)
+    const tier = boosted ? 'turbo' : impactTier(evenTie ? (judged.impact + judged.theirs) / 2 : judged.impact)
+    // Ricochete do empurrão que levei (sem boost): a batida é de quem me empurrou, reduzida
+    const chain = boosted || evenTie ? null : pushChain.ricochet(peerId, simTime, -hit.normal.x, -hit.normal.z)
+    // Empate: a média dos dois níveis, para o dano ser o mesmo para os dois
+    const base = chain ? chainDamage(scaleDamage(DAMAGE[tier] ?? 0, levelOf(chain.owner)), chain.relay)
+      : evenTie ? Math.round((scaleDamage(DAMAGE[tier] ?? 0, myLevel) + scaleDamage(DAMAGE[tier] ?? 0, levelOf(peerId))) / 2)
+      : scaleDamage(DAMAGE[tier] ?? 0, myLevel)
+    let damage = immune || !tier ? 0 : base
+    let mutual = false
+    if (!dummy && iAmLower && !chain) {
+      const ram = rams.sending(peerId, damage, simTime, { tie: evenTie })
+      damage = ram.damage
+      mutual = ram.mutual
+      if (ram.selfApply) {
+        if (damage) scoreUI.popup(car.root.position, tier, damage)
+        takeDamage(damage, peerId)
+      }
+    }
+    const push = evenTie ? 0 : impulse * (boosted ? BOOST_PUSH : 1) // a vítima vai no sentido oposto
+    net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted, mutual, ...(chain && { chain: chain.owner, relay: chain.relay }) })
     hitsSent.ready(peerId, simTime)
     if (boosted) car.endBoost()
     if (damage) scoreUI.popup(remote.root.position, tier, damage)
@@ -825,6 +912,7 @@ function sendState(dt, simTime) {
     ko: health.isKO,
     shield: health.isShielded,
     ult: ultSlot.active,
+    ghost: ultSlot.ghost, // Emboscada: os outros param de me desenhar
     ms: missilesFired,
     deaths: kills.deaths,
     koBy: kills.koBy,
@@ -891,7 +979,7 @@ function enterTestRange(name) {
 // Batida "mandada" para um boneco: aplica direto nele
 function hitDummy(hit) {
   const d = dummies.get(hit.target)
-  if (d) damageDummy(d, hit, hit.by ?? net.selfId)
+  if (d) damageDummy(d, hit, hit.chain ?? hit.by ?? net.selfId)
 }
 
 // Empurrão e dano num boneco/bot; o XP vai para `attackerId` (eu ou um bot)
@@ -1009,9 +1097,14 @@ function collideBotsWithPlayers(simTime, wallTime) {
     for (const bot of dummies.values()) {
       if (!bot.isBot || bot.health.isKO) continue
       const c = bot.car
-      const hit = testCars(c.root.position, c.yaw, remote.root.position, remote.yaw, footprint)
+      const hit = testCars(c.root.position, c.yaw, remote.root.position, remote.yaw, footprint, c.isBoosting ? BOOST_REACH : 0)
       if (!hit) continue
       c.separate(hit.normal, hit.depth)
+      if (bot.ult.strike()) { // Emboscada: encostou invisível, bate na hora
+        botSlam(bot)
+        bot.hitCooldown.ready(peerId, simTime)
+        continue
+      }
       const judged = judgeHit(hit.normal, c.velocity, remote.velocity)
       if (judged.role === 'victim') continue
       const impulse = c.collisionImpulse(hit.normal, remote.velocity)
@@ -1020,9 +1113,12 @@ function collideBotsWithPlayers(simTime, wallTime) {
       c.applyImpulse(tmpImpulse.copy(hit.normal).multiplyScalar(impulse))
       if (judged.role === 'tie' && !boosted) continue
       const tier = boosted ? 'turbo' : impactTier(judged.impact)
-      const damage = shield || !tier ? 0 : scaleDamage(DAMAGE[tier], levelOf(bot.id))
+      // Ricochete do bot arremessado no jogador: a batida é de quem empurrou o bot
+      const chain = boosted ? null : bot.pushChain.ricochet(peerId, simTime, -hit.normal.x, -hit.normal.z)
+      const base = chain ? chainDamage(scaleDamage(DAMAGE[tier] ?? 0, levelOf(chain.owner)), chain.relay) : scaleDamage(DAMAGE[tier] ?? 0, levelOf(bot.id))
+      const damage = shield || !tier ? 0 : base
       const push = impulse * (boosted ? BOOST_PUSH : 1)
-      net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted, by: bot.id })
+      net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted, by: bot.id, ...(chain && { chain: chain.owner, relay: chain.relay }) })
       bot.brain.noteHit(peerId)
       if (boosted) c.endBoost()
       if (damage) scoreUI.popup(remote.root.position, tier, damage)
@@ -1064,7 +1160,7 @@ function botWorld() {
     orbs: orbs.slots.filter((slot) => orbs.isActive(slot)).map((slot) => slot.mesh.position),
     heal: medkit.zones.map((z) => ({ x: z.x, z: z.z, radius: MEDKIT.radius })),
     obstacles,
-    ult: { phase: ultimate.phase, timer: ultimate.timer },
+    ult: { phase: ultimate.phase, timer: ultimate.timer, x: ultimate.x, z: ultimate.z },
     halfX: arena.halfX, halfZ: arena.halfZ,
     maxBoosts: MAX_BOOSTS, maxSpeed: car.params.maxSpeed, turnSpeed: car.params.turnSpeed,
   }
@@ -1073,17 +1169,17 @@ function botWorld() {
 // Inimigos de um bot: eu, os outros jogadores e os outros bots (bonecos
 // parados não interessam)
 function botEnemies(bot) {
-  const enemies = [{
+  const enemies = ultSlot.ghost ? [] : [{
     id: net.selfId, x: car.root.position.x, z: car.root.position.z, vx: car.velocity.x, vz: car.velocity.z,
     hp: health.hp, maxHp: health.max, ko: health.isKO, shield: health.isShielded, ult: ultSlot.active,
   }]
   for (const [id, p] of remotes.entries()) {
-    if (dummies.has(id) || !p.car.hasState) continue
+    if (dummies.has(id) || !p.car.hasState || p.ghost) continue
     const { position, velocity } = p.car
     enemies.push({ id, x: position.x, z: position.z, vx: velocity.x, vz: velocity.z, hp: p.hp, maxHp: maxHealthFor(levelOf(id)), ko: p.ko, shield: p.shield, ult: p.ult })
   }
   for (const d of dummies.values()) {
-    if (d === bot || !d.isBot) continue
+    if (d === bot || !d.isBot || d.ult?.ghost) continue
     enemies.push({
       id: d.id, x: d.x, z: d.z, vx: d.car.velocity.x, vz: d.car.velocity.z,
       hp: d.health.hp, maxHp: d.health.max, ko: d.health.isKO, shield: d.health.isShielded, ult: d.ult?.active,
@@ -1132,10 +1228,10 @@ function driveBot(bot, world, dt, simTime) {
 // os golpes saem como os de um jogador (pela rede, com `by` = o bot). Quem
 // simula é quem simula o bot (o anfitrião, ou eu no campo de testes)
 
-// Bot passando no centro com o item lá: é dele (só o anfitrião concede)
+// Bot passando no item: é dele (só o anfitrião concede)
 function claimUltForBot(bot) {
   if (ultimate.phase !== 'available' || !bot.ult.canPickUp || !amHost()) return
-  if (Math.hypot(bot.x, bot.z) >= ULT_PICKUP_RADIUS) return
+  if (Math.hypot(bot.x - ultimate.x, bot.z - ultimate.z) >= ULT_PICKUP_RADIUS) return
   if (!ultimate.claim(bot.id)) return
   checkUltGiven()
   broadcastUlt()
@@ -1182,11 +1278,21 @@ function botUltHit(bot, targetId, hit, popup) {
   bot.brain.noteHit(targetId)
 }
 
+// Batida da Emboscada de um bot: dano + stun em quem estiver no círculo (o
+// estouro aparece pelo estado dele, como o de um jogador)
+function botSlam(bot) {
+  const spec = ULTIMATES.ambush
+  for (const h of ambushStrikes(spec, bot.x, bot.z, botUltTargets(bot))) {
+    botUltHit(bot, h.id, { ix: 0, iz: 0, damage: scaleDamage(h.damage, levelOf(bot.id)), boosted: false, stun: h.stun, slam: true }, 'smash')
+  }
+}
+
 // Passo fixo: relógio do inventário e os efeitos em andamento
 function updateBotUltimate(bot, dt) {
   const slot = bot.ult
   if (bot.health.isKO) slot.stop()
-  slot.update(dt)
+  const wasAmbush = slot.active === 'ambush'
+  if (slot.update(dt) === 'ended' && wasAmbush) botSlam(bot)
   if (slot.active !== 'shockwave') bot.shockCast = null
   if (slot.active !== 'missile') bot.missileShotsLeft = 0
   const scale = (damage) => scaleDamage(damage, levelOf(bot.id))
@@ -1241,10 +1347,19 @@ function updateDummies(dt, simTime) {
     for (let j = i + 1; j < list.length; j++) {
       const a = list[i].car, b = list[j].car
       if (list[i].health.isKO || list[j].health.isKO) continue
-      const hit = testCars(a.root.position, a.yaw, b.root.position, b.yaw, footprint)
+      const hit = testCars(a.root.position, a.yaw, b.root.position, b.yaw, footprint, a.isBoosting || b.isBoosting ? BOOST_REACH : 0)
       if (!hit) continue
       a.separate(hit.normal, hit.depth / 2)
       b.separate(tmpImpulse.copy(hit.normal).negate(), hit.depth / 2)
+      // Emboscada: quem estava invisível bate na hora (o contato não vira batida normal)
+      const slamA = list[i].ult?.strike(), slamB = list[j].ult?.strike()
+      if (slamA) botSlam(list[i])
+      if (slamB) botSlam(list[j])
+      if (slamA || slamB) {
+        list[i].hitCooldown.ready(list[j].id, simTime)
+        list[j].hitCooldown.ready(list[i].id, simTime)
+        continue
+      }
       const impulse = a.collisionImpulse(hit.normal, b.velocity)
       if (impulse <= 0) continue
       const judged = judgeHit(hit.normal, a.velocity, b.velocity) // antes do empurrão
@@ -1260,17 +1375,29 @@ function updateDummies(dt, simTime) {
 
 // Bot bateu em outro carro do campo (o empurrão normal já foi trocado): dano
 // pela força da batida; com boost, TURBO e arremesso mais longe.
-// `normal * side` aponta de quem bateu para a vítima
+// `normal * side` aponta de quem bateu para a vítima. Boneco parado só causa
+// dano no ricochete de um empurrão (batida em cadeia: o dano é de quem empurrou)
 function botHits(atk, vic, impact, normal, side, simTime) {
-  if (!atk.isBot || !atk.hitCooldown.ready(vic.id, simTime)) return
+  if (atk.hitCooldown.recent(vic.id, simTime)) return
   const boosted = atk.car.isBoosting
+  const dx = normal.x * side, dz = normal.z * side
+  const chain = boosted ? null : atk.pushChain.ricochet(vic.id, simTime, dx, dz)
+  if (!atk.isBot && !chain) return
+  atk.hitCooldown.ready(vic.id, simTime)
+  const by = chain?.owner ?? atk.id
+  const relay = chain?.relay ?? 0
   const tier = boosted ? 'turbo' : impactTier(impact)
   if (boosted) atk.car.endBoost()
-  atk.brain.noteHit(vic.id)
-  if (!tier || vic.health.isShielded) return
-  const damage = scaleDamage(DAMAGE[tier], levelOf(atk.id))
+  atk.brain?.noteHit(vic.id)
+  if (!tier || vic.health.isShielded) {
+    vic.pushChain.pushed(by, relay, simTime, dx, dz) // levou o empurrão mesmo sem dano
+    return
+  }
+  const damage = chain ? chainDamage(scaleDamage(DAMAGE[tier], levelOf(by)), relay) : scaleDamage(DAMAGE[tier], levelOf(atk.id))
   const push = boosted ? impact * (BOOST_PUSH - 1) * side : 0
-  damageDummy(vic, { ix: normal.x * push, iz: normal.z * push, damage, boosted }, atk.id)
+  damageDummy(vic, { ix: normal.x * push, iz: normal.z * push, damage, boosted, relay }, by)
+  // O empurrão normal já foi trocado na física: o sentido dele vem da batida
+  vic.pushChain.pushed(by, relay, simTime, dx, dz)
   scoreUI.popup(vic.car.root.position, tier, damage)
 }
 
@@ -1312,7 +1439,12 @@ function dummyHitsMe(d, normal, impact, simTime) {
   const boosted = d.car.isBoosting
   d.car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(-impulse))
   car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(impulse * (boosted ? BOOST_PUSH : 1)))
-  kills.noteHit(d.id, simTime) // se eu cair, o abate é dele
+  // Arremessado em mim por alguém: a batida é de quem empurrou, reduzida
+  // `normal` aponta do boneco para mim: é o sentido do ricochete dele e do meu empurrão
+  const chain = boosted ? null : d.pushChain.ricochet(net.selfId, simTime, normal.x, normal.z)
+  const by = chain?.owner ?? d.id
+  pushChain.pushed(by, chain?.relay ?? 0, simTime, normal.x, normal.z)
+  kills.noteHit(by, simTime) // se eu cair, o abate é dele
   d.brain?.noteHit(net.selfId)
   if (boosted) {
     d.car.endBoost()
@@ -1320,9 +1452,9 @@ function dummyHitsMe(d, normal, impact, simTime) {
   }
   const tier = boosted ? 'turbo' : impactTier(impact)
   if (!tier || health.isShielded) return
-  const damage = scaleDamage(DAMAGE[tier], levelOf(d.id))
+  const damage = chain ? chainDamage(scaleDamage(DAMAGE[tier], levelOf(by)), chain.relay) : scaleDamage(DAMAGE[tier], levelOf(d.id))
   scoreUI.popup(car.root.position, tier, damage)
-  takeDamage(damage, d.id)
+  takeDamage(damage, by)
 }
 
 // --- Ultimate ------------------------------------------------------------------------
@@ -1331,6 +1463,8 @@ const tmpBoltTo = new THREE.Vector3()
 const stormTargets = []
 const activeStorms = []
 const stormPool = []
+const activeSlams = []
+const slamPool = []
 
 const playerName = (peerId) =>
   dummies.get(peerId)?.name || netBots.get(peerId)?.name || roster.get(peerId)?.name || `Player ${peerId.slice(0, 4).toUpperCase()}`
@@ -1475,13 +1609,13 @@ function applyShake(dt) {
 // Passo fixo: relógio do item, pegar no centro, usar (E) e os raios
 function updateUltimate(dt, stunned) {
   const host = amHost()
-  if (ultimate.update(dt, host)) broadcastUlt()
+  if (ultimate.update(dt, host, medkitSpots)) broadcastUlt()
   // Anfitrião reenvia o estado a cada 2 s: corrige relógios e mensagens perdidas
   if (host && (ultResend += dt) >= 2) broadcastUlt()
 
   const pos = car.root.position
-  // Pegar: vaga livre e passando no centro (o pedido vai ao anfitrião)
-  if (ultimate.phase === 'available' && ultSlot.canPickUp && !health.isKO && ultClaimed !== ultimate.n && Math.hypot(pos.x, pos.z) < ULT_PICKUP_RADIUS) {
+  // Pegar: vaga livre e passando no item (o pedido vai ao anfitrião)
+  if (ultimate.phase === 'available' && ultSlot.canPickUp && !health.isKO && ultClaimed !== ultimate.n && Math.hypot(pos.x - ultimate.x, pos.z - ultimate.z) < ULT_PICKUP_RADIUS) {
     ultClaimed = ultimate.n
     if (!host) net.sendUltReq({ n: ultimate.n, op: 'claim' })
     else if (ultimate.claim(net.selfId)) {
@@ -1492,7 +1626,7 @@ function updateUltimate(dt, stunned) {
 
   if (freeUltimate) {
     ultSlot.cooldown = 0
-    if (ultSlot.kind) ultSlot.storedLeft = ULT_STORE_TIME
+    if (ultSlot.kind) ultSlot.storedLeft = storeTimeFor(ultSlot.kind)
   }
   // Usar o guardado
   if (wasPressed('KeyE') && ultSlot.ready && !health.isKO && !stunned) {
@@ -1516,7 +1650,10 @@ function updateUltimate(dt, stunned) {
   }
   if (health.isKO) ultSlot.stop() // nocauteado: o poder em uso acaba
   if (ultSlot.active !== 'shockwave') shockCast = null // (cancela a onda no meio)
-  if (ultSlot.update(dt) === 'expired') announce('⚡ ULT EXPIRED', 'not used in time', 'enemy')
+  const wasAmbush = ultSlot.active === 'ambush'
+  const ended = ultSlot.update(dt)
+  if (ended === 'expired') announce('⚡ ULT EXPIRED', 'not used in time', 'enemy')
+  if (ended === 'ended' && wasAmbush) slamAmbush()
 
   // Onda de choque: a frente anda pela faixa e acerta quem estiver nela
   if (shockCast) {
@@ -1540,8 +1677,87 @@ function updateUltimate(dt, stunned) {
   }
 }
 
+// Emboscada: o aviso acabou e eu bato em quem estiver no círculo (dano + stun,
+// sem empurrão)
+function slamAmbush() {
+  const spec = ULTIMATES.ambush
+  const pos = car.root.position
+  for (const h of ambushStrikes(spec, pos.x, pos.z, ultTargets())) {
+    const damage = scaleDamage(h.damage, myLevel)
+    net.sendHit({ target: h.id, ix: 0, iz: 0, damage, boosted: false, stun: h.stun, slam: true })
+    if (damage) scoreUI.popup(remotes.get(h.id).car.root.position, tierOfDamage(damage, damageScale(myLevel)), damage)
+  }
+  showSlam(pos)
+}
+
+// Invisível (Emboscada): para os outros o carro some de vez (state.ghost);
+// para mim ele fica bem translúcido (com contorno, sem sombra). Os materiais são
+// compartilhados com os carros dos outros, então o meu ganha cópias enquanto
+// dura (e volta para os originais no fim)
+const GHOST_OPACITY = 0.18
+let ghostShown = false
+function setGhostLook(on) {
+  if (on === ghostShown) return
+  ghostShown = on
+  car.root.traverse((o) => {
+    if (!o.isMesh || Array.isArray(o.material)) return
+    if (on) {
+      o.userData.solid = { material: o.material, castShadow: o.castShadow }
+      const ghost = o.material.clone()
+      ghost.transparent = true
+      ghost.depthWrite = false
+      if (ghost.uniforms?.uOpacity) ghost.uniforms.uOpacity.value = GHOST_OPACITY
+      else ghost.opacity = GHOST_OPACITY
+      o.material = ghost
+      o.castShadow = false
+    } else if (o.userData.solid) {
+      o.material.dispose()
+      o.material = o.userData.solid.material
+      o.castShadow = o.userData.solid.castShadow
+      delete o.userData.solid
+    }
+  })
+}
+
+// Escuridão (como a ult do Nocturne): alguém invisível na arena escurece a
+// tela, com um pouco de visão em volta do meu carro. Para quem está invisível
+// escurece menos (ele sabe onde está). Camada por cima da arena, embaixo do HUD
+const darkness = document.createElement('div')
+darkness.className = 'darkness'
+renderer.domElement.after(darkness)
+const tmpDark = new THREE.Vector3()
+function updateDarkness() {
+  let level = 0
+  if (inMatch() && car && remotes) {
+    for (const p of remotes.values()) if (p.ghost && !p.ko) level = 1
+    if (ultSlot.ghost && !health.isKO) level = Math.max(level, 0.55)
+  }
+  darkness.style.opacity = level
+  if (!level) return
+  // Visão centrada no meu carro (onde ele está na tela)
+  tmpDark.copy(car.root.position).project(camera)
+  darkness.style.setProperty('--x', `${((tmpDark.x + 1) / 2) * 100}%`)
+  darkness.style.setProperty('--y', `${((1 - tmpDark.y) / 2) * 100}%`)
+}
+
+// Estouro da batida (mais perto de mim, mais forte a tremida)
+function showSlam(position) {
+  const spec = ULTIMATES.ambush
+  ultView.burst(position, spec.radius)
+  const dist = Math.hypot(position.x - car.root.position.x, position.z - car.root.position.z)
+  shake = Math.max(shake, 0.9 * Math.max(0, 1 - dist / (spec.radius * 4)))
+}
+
 // Desenho: feixe/item, círculos das tempestades, brilho e a faixa de aviso
 function renderUltimate(dt) {
+  activeSlams.length = 0
+  const addSlam = (position) => {
+    const s = (slamPool[activeSlams.length] ??= {})
+    s.position = position
+    s.radius = ULTIMATES.ambush.radius
+    activeSlams.push(s)
+  }
+  if (ultSlot.active === 'ambush' && !ultSlot.ghost && !health.isKO) addSlam(car.root.position)
   activeStorms.length = 0
   const addStorm = (position, kind) => {
     const s = (stormPool[activeStorms.length] ??= {})
@@ -1554,9 +1770,10 @@ function renderUltimate(dt) {
   for (const [id, p] of remotes.entries()) {
     if (!p.ult || p.ko || !p.car.hasState) continue
     if (p.ult === 'overcharge') addStorm(p.car.root.position, p.ult)
+    if (p.ult === 'ambush' && !p.ghost) addSlam(p.car.root.position)
     enemyPowered ??= id
   }
-  ultView.update(dt, { phase: ultimate.phase, storms: activeStorms, missiles: missileShots })
+  ultView.update(dt, { phase: ultimate.phase, x: ultimate.x, z: ultimate.z, storms: activeStorms, missiles: missileShots, slams: activeSlams })
 
   // Brilho da carroceria: pulsa com o ultimate; azul no boost
   const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 70)
@@ -1584,10 +1801,10 @@ function renderUltimate(dt) {
     const spec = ULTIMATES[remotes.get(enemyPowered).ult]
     ultBanner.show({ title: `⚡ ${playerName(enemyPowered)} · ${spec.name}`, sub: spec.enemyHint, tone: 'enemy' })
   } else if (ultimate.phase === 'warning') {
-    ultBanner.show({ title: `⚡ ULTIMATE IN ${left}`, sub: 'at the center of the arena', tone: 'warn' })
+    ultBanner.show({ title: `⚡ ULTIMATE IN ${left}`, sub: 'watch for the beam of light', tone: 'warn' })
   } else if (ultimate.phase === 'available') {
     const sub = ultSlot.canPickUp ? 'drive over it to grab it' : 'your ult slot is full'
-    ultBanner.show({ title: `⚡ ${ULTIMATES[ultimate.kind].name} AT THE CENTER!`, sub, tone: 'go' })
+    ultBanner.show({ title: `⚡ ${ULTIMATES[ultimate.kind].name} IS OUT!`, sub, tone: 'go' })
   } else {
     ultBanner.show(null)
   }
@@ -1669,6 +1886,7 @@ const loop = new FixedStepLoop({
     orbs.update(dt)
     if (!car || !inMatch()) return // (fim de partida também: tudo para atrás do resultado)
     updateCountdown(dt)
+    if (phase === 'playing') playTime += dt
     if (phase === 'playing' && !testMode) updateMatchClock(dt)
     const playing = phase === 'playing'
     car.savePrevious()
@@ -1702,11 +1920,13 @@ const loop = new FixedStepLoop({
     remotes?.sample(wallTime)
     remotes?.updatePresence(dt)
     if (car) presence.apply(car.root, presence.update(dt, !health.isKO))
+    if (car) setGhostLook(ultSlot.ghost && !health.isKO)
     car?.beginRender(alpha) // pose interpolada entre os dois últimos passos
-    groupCamera.update(dt, cameraSubjects())
+    groupCamera.update(dt, cameraSubjects(), car && inMatch() && !health.isKO ? car : null)
     applyShake(dt)
     if (car && inMatch()) sparks.update(dt, sparkEmitters())
     if (car && inMatch()) renderUltimate(dt)
+    updateDarkness() // depois da câmera: a visão fica em cima do meu carro
     medViews.forEach((view, i) => view.update(dt, inMatch() ? medkit.zones[i] ?? null : null))
     matchClock.show(inMatch() && !testMode ? formatClock(matchLeft) : null, matchLeft <= 30)
     bats?.update(dt)
@@ -1759,8 +1979,11 @@ function cameraSubjects() {
   if (!inMatch()) return arenaView
   subjects.length = 0
   if (car && !health.isKO) subjects.push(car)
-  if (remotes) for (const { car: remote, ko } of remotes.values()) if (remote.hasState && !ko) subjects.push(remote)
-  if (ultimate.phase === 'available') subjects.push(arenaCenter) // todo mundo vê onde está o item
+  if (remotes) for (const { car: remote, ko, ghost } of remotes.values()) if (remote.hasState && !ko && !ghost) subjects.push(remote)
+  if (ultimate.phase === 'available') {
+    arenaCenter.position.set(ultimate.x, 0, ultimate.z)
+    subjects.push(arenaCenter) // todo mundo vê onde está o item
+  }
   return subjects
 }
 
@@ -1798,7 +2021,7 @@ function arrowItems() {
   if (!boostLocked()) {
     for (const slot of orbs.slots) if (orbs.isActive(slot)) arrowList.push({ kind: 'boost', position: slot.mesh.position })
   }
-  if (ultimate.phase === 'available' && ultSlot.canPickUp) arrowList.push({ kind: 'ultimate', position: arrowCenter })
+  if (ultimate.phase === 'available' && ultSlot.canPickUp) arrowList.push({ kind: 'ultimate', position: arrowCenter.set(ultimate.x, 0, ultimate.z) })
   return arrowList
 }
 
@@ -1819,7 +2042,7 @@ function carTagSubjects() {
   for (const [peerId, player] of remotes.entries()) {
     const name = playerName(peerId)
     const tag = `${name} · Lv${levelOf(peerId)}`
-    add(peerId, isPowered(peerId) ? `⚡ ${tag}` : tag, player.hp, player.car.root.position, player.car.hasState && !player.ko)
+    add(peerId, isPowered(peerId) ? `⚡ ${tag}` : tag, player.hp, player.car.root.position, player.car.hasState && !player.ko && !player.ghost)
   }
   return tagSubjects
 }
@@ -1879,6 +2102,10 @@ function updateProgression() {
     announce(`⬆ LEVEL ${level}!`, `damage x${damageScale(level).toFixed(1)} · max HP ${health.max}`, 'levelup')
   }
   myLevel = level
+  if (import.meta.env.DEV && phase === 'playing') {
+    levelTimer.update(net.selfId, level, playTime)
+    for (const [id] of remotes.entries()) levelTimer.update(id, levelOf(id), playTime)
+  }
   for (const d of dummies.values()) d.health.setMax(maxHealthFor(levelOf(d.id)))
 }
 
@@ -1915,6 +2142,17 @@ function endMatch() {
     onAgain: playAgain,
     onLeave: () => location.assign(location.pathname),
   })
+  if (import.meta.env.DEV) saveMatchReport(ranked)
+}
+
+// Só no `npm run dev`: grava o relatório da partida em match-stats/ (vite.config.js)
+function saveMatchReport(ranked) {
+  const seconds = MATCH_TIME
+  const stats = buildStats(ranked, { seconds, levelOf, xpOf: (id) => damageTally.get(id) ?? 0, levelTimesOf: (id) => levelTimer.timesOf(id) })
+  const report = buildReport(stats, { seconds, balance: { DAMAGE, damageParams } })
+  fetch('/__match-stats', { method: 'POST', body: JSON.stringify(report) })
+    .then((r) => r.ok || console.error('match-stats:', r.status))
+    .catch((err) => console.error('match-stats:', err))
 }
 
 // Anfitrião: outra partida com mapa novo, placar zerado

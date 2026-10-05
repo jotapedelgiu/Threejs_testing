@@ -83,7 +83,7 @@ const closestB = new THREE.Vector2()
  * Testa a cápsula A contra a B.
  * @returns {{ normal: THREE.Vector3, depth: number } | null} normal de B para A
  */
-export function testCars(posA, yawA, posB, yawB, fp) {
+export function testCars(posA, yawA, posB, yawB, fp, reach = 0) {
   capsuleSegment(posA, yawA, fp, tmpA0, tmpA1)
   capsuleSegment(posB, yawB, fp, tmpB0, tmpB1)
   closestPointsSegments(tmpA0, tmpA1, tmpB0, tmpB1, closestA, closestB)
@@ -91,8 +91,11 @@ export function testCars(posA, yawA, posB, yawB, fp) {
   const dx = closestA.x - closestB.x
   const dz = closestA.y - closestB.y
   const dist = Math.hypot(dx, dz)
-  const depth = fp.radius * 2 - dist
-  if (depth <= 0) return null
+  // `reach` (m): alcance extra de quem está com boost; acerta um pouco antes de
+  // encostar, e a separação continua só pela sobreposição de verdade
+  const overlap = fp.radius * 2 - dist
+  if (overlap + reach <= 0) return null
+  const depth = Math.max(overlap, 0)
 
   // Centros praticamente no mesmo ponto: empurra pela diferença de posição
   const normal = dist > 1e-6

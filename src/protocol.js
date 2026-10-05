@@ -9,9 +9,11 @@
 //          vezes foi nocauteado por quem: { id: n } (o placar de abates sai daqui; match.js))
 //          (tp = contador de teletransportes: mudou, não interpola)
 //          estado do carrinho de quem manda, 20x por segundo (t = relógio de simulação)
-//   hit    { target, ix, iz, damage, boosted, stun, zap, blast, rocket }  quem bateu: empurrão e
+//   hit    { target, ix, iz, damage, boosted, stun, zap, blast, rocket, slam }  quem bateu: empurrão e
 //                                               dano que `target` recebe (stun = s atordoado; zap =
-//                                               raio da Sobrecarga; blast = Onda de choque; rocket = míssil)
+//                                               raio da Sobrecarga; blast = Onda de choque; rocket = míssil;
+//                                               slam = batida da Emboscada)
+//   (state.ghost = Emboscada: invisível para os outros)
 //   wall   { damage }                           quem manda bateu na parede depois de um boost
 //   pickup { slot, gen }                        alguém pegou uma esfera
 //   layout { seed, since, orbs: [{ gen, wait }] } mapa da partida + esferas, para quem acabou de entrar
@@ -19,7 +21,7 @@
 //   hello  { name, since, phase }               quem sou eu: nome, quando entrei na sala e se
 //                                               estou na sala de espera ('lobby') ou jogando
 //   start  { seed, since }                      o anfitrião começou a partida (mapa dela)
-//   ult    { n, phase, kind, left, given }      item do ultimate no centro (só o anfitrião manda;
+//   ult    { n, phase, kind, left, x, z, given } item do ultimate (x, z = onde está) (só o anfitrião manda;
 //                                               given = último entregue { n, owner, kind }; ultimate.js)
 //   ultreq { n, op }                            pedido ao anfitrião: 'claim' (passei no centro)
 //   medkit { v, zones: [{ id, x, z, left }] }   zonas de cura ativas (só o anfitrião manda; medkit.js)
@@ -27,12 +29,15 @@
 //   bots   { list: [{ id, name, kind, state }] } bots da partida (só o anfitrião manda, 20x por
 //                                               segundo; state = mesmo formato do `state`; bots.js)
 //   (hit.by = bot que bateu, quando o anfitrião manda a batida de um bot; o id começa com "bot-")
+//   (hit.chain/relay = batida em cadeia: quem bateu tinha sido empurrado por `chain`, e o dano
+//    é dele, reduzido; relay = quantos repasses)
 
 // Qualquer jogador pode mandar qualquer coisa. Um NaN num empurrão quebraria a
 // física de quem recebe para sempre, e um valor gigante jogaria o carro para
 // fora do mapa; então tudo é conferido e limitado antes de chegar ao jogo.
 // Mensagem inválida é descartada (null).
 import { ULT_KINDS } from './ultimate.js'
+import { CHAIN_MAX } from './damage.js'
 
 const MAX_SPEED = 60 // m/s; bem acima de qualquer velocidade real do jogo
 const MAX_COORD = 1000
@@ -87,6 +92,7 @@ export const validators = {
     out.livery = str(m.livery, 40)
     out.colors = Array.isArray(m.colors) && m.colors.length === 2 && m.colors.every(isColor) ? m.colors : null
     out.ult = ULT_KINDS.includes(m.ult) ? m.ult : null
+    out.ghost = m.ghost === true // Emboscada: invisível para os outros
     out.ms = int(m.ms, 0, 1e6) ?? 0
     out.deaths = int(m.deaths, 0, 1e6) ?? 0
     out.koBy = countsOf(m.koBy)
@@ -107,7 +113,12 @@ export const validators = {
     out.zap = m.zap === true
     out.blast = m.blast === true
     out.rocket = m.rocket === true
+    out.slam = m.slam === true // batida de área da Emboscada (dano + stun, sem empurrão)
+    out.mutual = m.mutual === true // batida de frente: o dano vale para os dois (damage.js: RamLedger)
     out.by = botId(m.by)
+    // Batida em cadeia (damage.js: PushChain): o dano é de `chain`, repassado `relay` vezes
+    out.chain = str(m.chain, 64)
+    out.relay = out.chain ? int(m.relay, 1, CHAIN_MAX) ?? 1 : 0
     return out
   },
   wall(m) {
@@ -146,6 +157,8 @@ export const validators = {
     const out = {
       n: int(m?.n, 0, 1e9),
       left: num(m?.left, 0, 600),
+      x: num(m?.x ?? 0, -500, 500),
+      z: num(m?.z ?? 0, -500, 500),
     }
     if (anyNull(out) || !ULT_PHASES.includes(m.phase)) return null
     out.phase = m.phase

@@ -18,6 +18,8 @@ export class GroupCamera {
     margin: 4,        // folga em volta dos carros (m)
     lookAhead: 0.5,   // s: enquadra onde cada carro vai estar, não só onde está
     smoothing: 3,     // quanto maior, mais rápido a câmera acompanha
+    focus: 0.55,      // 0 = meio do grupo, 1 = em cima do jogador
+    safeZone: 0.6,    // fração do quadro onde o jogador pode ficar (1 = até a borda)
   }
 
   center = new THREE.Vector3()
@@ -33,6 +35,8 @@ export class GroupCamera {
     this.points = Array.from({ length: MAX_POINTS }, () => new THREE.Vector3())
     this.box = new THREE.Box3()
     this.target = new THREE.Vector3()
+    this.focusPoint = new THREE.Vector3()
+    this.flat = new THREE.Vector3()
     this.rel = new THREE.Vector3()
     this.updateAxes()
   }
@@ -51,10 +55,37 @@ export class GroupCamera {
   }
 
   /**
+   * Garante que o jogador fique na zona central do quadro (p.safeZone da
+   * meia-largura/altura visível), deslocando o centro se preciso. Se o zoom
+   * out já está no máximo, são os outros carros que saem do quadro.
+   */
+  keepInFrame(position) {
+    const p = this.params
+    const tanY = Math.tan(THREE.MathUtils.degToRad(p.fov) / 2)
+    const tanX = tanY * this.camera.aspect
+    const rel = this.rel.copy(position).setY(1).sub(this.center)
+    const depth = this.distance - rel.dot(this.back)
+    const limX = Math.max(0, depth * tanX * p.safeZone - p.margin)
+    const limY = Math.max(0, depth * tanY * p.safeZone - p.margin)
+    const x = rel.dot(this.right)
+    const y = rel.dot(this.up)
+    const overX = Math.abs(x) - limX
+    const overY = Math.abs(y) - limY
+    if (overX > 0) this.center.addScaledVector(this.right, Math.sign(x) * overX)
+    if (overY > 0) {
+      // Desloca no chão: a componente "up" projetada no plano XZ
+      const flat = this.flat.copy(this.up).setY(0).normalize()
+      this.center.addScaledVector(flat, Math.sign(y) * overY / Math.max(this.up.dot(flat), 0.1))
+    }
+    this.center.setY(0)
+  }
+
+  /**
    * @param {number} dt
    * @param {{ position: THREE.Vector3, velocity: THREE.Vector3 }[]} subjects
+   * @param {{ position: THREE.Vector3 } | null} [focus] jogador: prioridade no enquadramento
    */
-  update(dt, subjects) {
+  update(dt, subjects, focus = null) {
     const p = this.params
     let count = 0
     for (const { position, velocity } of subjects) {
@@ -63,10 +94,14 @@ export class GroupCamera {
     }
 
     if (count) {
-      // Centro: meio da caixa dos carros no chão
+      // Centro: meio da caixa dos carros, puxado para o jogador
       this.box.makeEmpty()
       for (let i = 0; i < count; i++) this.box.expandByPoint(this.points[i])
       const target = this.box.getCenter(this.target).setY(0)
+      if (focus && count > 1) {
+        const f = this.focusPoint.copy(focus.position).setY(0)
+        target.lerp(f, p.focus)
+      }
 
       // Distância para cada ponto caber no quadro: a meia-largura visível a
       // uma profundidade z é z * tan(fov/2); o ponto fica a (d - rel·back)
@@ -91,6 +126,7 @@ export class GroupCamera {
         // Afasta rápido (ninguém sai do quadro), aproxima devagar (sem "respirar")
         const zoomRate = distance > this.distance ? p.smoothing * 2 : p.smoothing * 0.4
         this.distance += (distance - this.distance) * (1 - Math.exp(-zoomRate * dt))
+        if (focus) this.keepInFrame(focus.position)
       }
     }
 

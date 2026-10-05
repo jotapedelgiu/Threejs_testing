@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { Health, HitCooldown, WALL_DAMAGE_WINDOW } from './damage.js'
+import { Health, HitCooldown, PushChain, WALL_DAMAGE_WINDOW } from './damage.js'
 import { KillTracker } from './match.js'
 
 // Campo de testes (botão no menu principal): partida só sua, sem rede, com
@@ -39,6 +39,7 @@ export class TrainingDummy {
     this.blastUntil = 0   // levou a Onda de choque: mureta e pneus doem até aqui
     this.hitCooldown = new HitCooldown() // ele batendo em mim
     this.batCooldown = new HitCooldown() // ele batendo nos bastões
+    this.pushChain = new PushChain() // empurrado por alguém: a próxima batida dele é de quem empurrou
     this.brain = null     // BotBrain: dirige sozinho (null = boneco parado)
     this.boosts = 0       // estoque de boosts (só bots pegam esferas)
     this.stunUntil = 0    // atordoado (Sobrecarga) até este instante
@@ -75,6 +76,7 @@ export class TrainingDummy {
     if (hit.blast) this.blastUntil = now + WALL_DAMAGE_WINDOW
     if (hit.stun && !this.health.isShielded) this.stunUntil = Math.max(this.stunUntil, now + hit.stun)
     if (hit.boosted) this.car.endBoost()
+    if (!hit.mutual) this.pushChain.pushed(attacker, hit.relay ?? 0, now, hit.ix, hit.iz)
     this.kills.noteHit(attacker, now)
     const result = this.hurt(hit.damage, now)
     this.kills.noteXp(attacker, xpFor(result.dealt))
@@ -122,7 +124,7 @@ export class TrainingDummy {
     return {
       ...this.car.getNetState(), t,
       hp: this.health.hp, ko: this.health.isKO, shield: this.health.isShielded,
-      livery: null, colors: this.colors, ult: this.ult?.active ?? null, ms: this.missilesFired,
+      livery: null, colors: this.colors, ult: this.ult?.active ?? null, ghost: this.ult?.ghost ?? false, ms: this.missilesFired,
       deaths: this.kills.deaths, koBy: { ...this.kills.koBy }, asBy: { ...this.kills.asBy },
       xpBy: { ...this.kills.xpBy },
     }

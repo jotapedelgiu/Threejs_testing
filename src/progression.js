@@ -39,6 +39,7 @@ export const XP_EXTRA = {
   min: 0.5,
   max: 2.5,
   kill: 30,
+  assistFraction: 0.4, // assistência vale essa fração do bônus de abate
   killPerLevel: 0.25,
   killMin: 0.5,
   repeatFraction: 1,
@@ -58,6 +59,9 @@ export const xpForHit = (dealt, attackerLevel, victimLevel) =>
 /** XP (inteiro) extra de quem abate. */
 export const xpForKill = (attackerLevel, victimLevel) =>
   Math.round(XP_EXTRA.kill * Math.max(XP_EXTRA.killMin, 1 + XP_EXTRA.killPerLevel * (victimLevel - attackerLevel)))
+
+/** XP (inteiro) extra de quem ajudou no abate: menos que o de quem abate. */
+export const xpForAssist = (attackerLevel, victimLevel) => Math.round(xpForKill(attackerLevel, victimLevel) * XP_EXTRA.assistFraction)
 
 /** Fração do XP quando a vítima já tinha caído para o mesmo atacante há `since` s (null = nunca). */
 export const repeatScale = (since) =>

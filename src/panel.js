@@ -36,9 +36,10 @@ export class ControlPanel {
    *   quality: { maxPixelRatio: number, shadowSize: number, maxFps: number, showFps: boolean },
    *   onQualityChange: () => void,
    *   onRerollLivery: () => void,
+   *   onEndMatch: () => void,
    * }} deps
    */
-  constructor({ background, sun, arena, camera, sparks, batPaint, tirePaint, quality, onQualityChange, onRerollLivery }) {
+  constructor({ background, sun, arena, camera, sparks, batPaint, tirePaint, quality, onQualityChange, onRerollLivery, onEndMatch }) {
     const gui = (this.gui = new GUI({ title: 'Settings' }))
     if (!new URLSearchParams(location.search).has('painel')) gui.hide()
     window.addEventListener('keydown', (e) => {
@@ -51,6 +52,10 @@ export class ControlPanel {
     gui.add({ reset: () => gui.reset() }, 'reset').name('Reset to code defaults')
     // Só faz sentido no servidor de desenvolvimento, que pode escrever o arquivo
     if (!import.meta.env.DEV) this.saveButton.hide()
+
+    // Só para testes: encerra a partida na hora (para ver o placar e baixar as
+    // estatísticas sem esperar os 6 min). Some na versão publicada.
+    if (import.meta.env.DEV) gui.add({ end: onEndMatch }, 'end').name('End match (test)')
 
     // Carrinho e materiais são preenchidos depois que o modelo carrega
     this.carFolder = gui.addFolder('Car')

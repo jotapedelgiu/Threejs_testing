@@ -1,11 +1,11 @@
-// Ultimate: um poder bem forte que aparece no centro da arena a cada minuto,
-// sorteado entre os tipos de ULTIMATES. Sem dependências, para poder ser
+// Ultimate: um poder bem forte que aparece num lugar aleatório da arena a
+// cada 30 s, sorteado entre os tipos de ULTIMATES. Sem dependências, para poder ser
 // testado no Node.
 //
-// Item no centro: espera (60 s) → aviso nos últimos 10 s → item lá → alguém
-// pega → recomeça a espera. Quem pega guarda no inventário (UltimateSlot) e
-// tem até ULT_STORE_TIME para usar, senão perde; depois de usar, tem 1 min de
-// recarga.
+// Item na arena: espera (30 s) → aviso nos últimos 10 s (o lugar já é sorteado
+// e o feixe aparece lá) → item lá → alguém pega → recomeça a espera. Quem pega
+// guarda no inventário (UltimateSlot) e tem até ULT_STORE_TIME para usar,
+// senão perde; depois de usar, tem 30 s de recarga.
 //
 // Sem servidor, o item é decidido pelo ANFITRIÃO da sala (lobby.js: quem está
 // há mais tempo): só ele avança as fases e concede o item, e avisa a sala a
@@ -14,10 +14,12 @@
 // concede, um item nunca vai para dois jogadores. Usar o poder é com o dono:
 // ele avisa a sala pelo estado do carro (protocol.js: state.ult).
 
-export const ULT_INTERVAL = 60     // s entre um ultimate e o próximo
+export const ULT_INTERVAL = 30     // s entre um ultimate e o próximo
 export const ULT_WARNING = 10      // s de aviso antes de aparecer
-export const ULT_PICKUP_RADIUS = 2.5 // m do centro da arena para pegar
-export const ULT_COOLDOWN = 60     // s depois de usar até poder usar outro
+export const ULT_PICKUP_RADIUS = 2.5 // m do item para pegar
+export const ULT_COOLDOWN = 30     // s depois de usar até poder usar outro (não passa do intervalo: o próximo item já pode ser usado)
+
+const CENTER = [{ x: 0, z: 0 }] // sem lugares para sortear: o centro
 
 /** Tipos de ultimate (o sorteio usa todos os desta lista). */
 export const ULTIMATES = {
@@ -78,6 +80,22 @@ export const ULTIMATES = {
     hint: '5 missiles: rooted, steer to aim',
     enemyHint: 'missile incoming! stay off the trail',
   },
+  // Emboscada: o dono some para os outros por `vanish` s e dirige invisível
+  // (sem boost, como qualquer ultimate). Na primeira vez que encostar em outro
+  // carro, reaparece e a batida de área sai na hora; se o tempo acabar sem
+  // isso, um círculo no chão avisa todo mundo por `windup` s antes. A batida dá
+  // dano e atordoa quem estiver dentro (sem empurrar)
+  ambush: {
+    name: 'AMBUSH',
+    vanish: 15,       // s invisível
+    windup: 0.5,      // s do aviso no chão até a batida
+    duration: 15.5,   // s no total (vanish + windup)
+    radius: 5,        // m em volta do dono
+    damage: 35,       // entre a PANCADA (24) e o TURBO (38)
+    stun: 1,          // s sem dirigir
+    hint: 'invisible! ram someone to strike (or wait 15s)',
+    enemyHint: 'someone is invisible! watch the ground',
+  },
 }
 export const ULT_KINDS = Object.keys(ULTIMATES)
 
@@ -85,6 +103,12 @@ export const ULT_KINDS = Object.keys(ULTIMATES)
 // poder. Mesmo usando no último instante, o poder acaba quando o próximo item
 // surge: nunca há dois ultimates ativos ao mesmo tempo
 export const ULT_STORE_TIME = ULT_INTERVAL - Math.max(...ULT_KINDS.map((k) => ULTIMATES[k].duration))
+
+/**
+ * Prazo de cada tipo (o mesmo cálculo, só com a duração do próprio poder): a
+ * Emboscada, bem mais longa, não encurta o prazo dos outros.
+ */
+export const storeTimeFor = (kind) => ULT_INTERVAL - ULTIMATES[kind].duration
 
 export class UltimateDirector {
   constructor(random = Math.random) {
@@ -96,14 +120,16 @@ export class UltimateDirector {
   reset() {
     this.n = 0             // número do ciclo (mensagens de ciclos velhos são ignoradas)
     this.phase = 'waiting' // 'waiting' | 'warning' | 'available'
-    this.kind = null       // tipo do item no centro
+    this.kind = null       // tipo do item
+    this.x = 0             // onde o item está (sorteado no aviso)
+    this.z = 0
     this.timer = ULT_INTERVAL // s até a próxima fase
     this.given = null      // último item entregue: { n, owner, kind }
   }
 
   /** Estado para mandar pela rede. */
   snapshot() {
-    return { n: this.n, phase: this.phase, kind: this.kind, left: Math.max(0, this.timer), given: this.given }
+    return { n: this.n, phase: this.phase, kind: this.kind, left: Math.max(0, this.timer), x: this.x, z: this.z, given: this.given }
   }
 
   /** Estado recebido do anfitrião. @returns se foi aceito */
@@ -113,19 +139,23 @@ export class UltimateDirector {
     this.phase = state.phase
     this.kind = state.kind
     this.timer = state.left
+    this.x = state.x
+    this.z = state.z
     this.given = state.given
     return true
   }
 
   /**
    * Avança o relógio. Só o anfitrião muda de fase.
+   * @param {{ x: number, z: number }[]} spots lugares possíveis para o item
    * @returns true se a fase mudou (o anfitrião avisa a sala)
    */
-  update(dt, isHost) {
+  update(dt, isHost, spots = CENTER) {
     this.timer -= dt
     if (!isHost) return false
     if (this.phase === 'waiting' && this.timer <= ULT_WARNING) {
       this.phase = 'warning'
+      this.place(spots)
       return true
     }
     if (this.phase === 'warning' && this.timer <= 0) {
@@ -135,6 +165,14 @@ export class UltimateDirector {
       return true
     }
     return false
+  }
+
+  // Sorteia o lugar do próximo item, diferente do anterior quando dá
+  place(spots) {
+    const options = spots.length > 1 ? spots.filter((p) => p.x !== this.x || p.z !== this.z) : spots
+    const spot = options[Math.floor(this.random() * options.length)] ?? CENTER[0]
+    this.x = spot.x
+    this.z = spot.z
   }
 
   /**
@@ -179,10 +217,26 @@ export class UltimateSlot {
     return !!this.kind && !this.active && this.cooldown <= 0
   }
 
+  /** Emboscada em uso e ainda invisível (antes do aviso da batida)? */
+  get ghost() {
+    return this.active === 'ambush' && this.activeLeft > ULTIMATES.ambush.windup
+  }
+
+  /**
+   * Emboscada: o dono encostou em outro carro invisível. Reaparece e bate NA
+   * HORA (sem o aviso no chão); o poder acaba. @returns se estava invisível
+   * (hora da batida)
+   */
+  strike() {
+    if (!this.ghost) return false
+    this.stop()
+    return true
+  }
+
   give(kind) {
     if (this.kind) return false
     this.kind = kind
-    this.storedLeft = ULT_STORE_TIME
+    this.storedLeft = storeTimeFor(kind)
     return true
   }
 
@@ -282,6 +336,22 @@ export class StormStrikes {
 }
 
 const TARGET_RADIUS = 0.6 // m: meio carro; encostar na faixa já conta
+
+/**
+ * Batida de área da Emboscada, calculada pelo dono no instante em que o poder
+ * acaba: todo alvo dentro do raio leva o dano e o atordoamento (sem empurrão).
+ * @param {{ id: string, x: number, z: number, immune: boolean }[]} targets
+ *   immune = protegido: é atordoado só se não estiver, e sem dano
+ * @returns {{ id: string, damage: number, stun: number }[]}
+ */
+export function ambushStrikes(spec, cx, cz, targets) {
+  const hits = []
+  for (const t of targets) {
+    if (Math.hypot(t.x - cx, t.z - cz) > spec.radius + TARGET_RADIUS) continue
+    hits.push({ id: t.id, damage: t.immune ? 0 : spec.damage, stun: t.immune ? 0 : spec.stun })
+  }
+  return hits
+}
 
 /**
  * Uma Onda de choque em andamento: preparação, depois a frente da onda anda
