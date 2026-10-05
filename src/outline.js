@@ -1,6 +1,7 @@
 import * as THREE from 'three'
 import { FullScreenQuad } from 'three/examples/jsm/postprocessing/Pass.js'
 import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js'
+import { Bloom, bloomOptions } from './bloom.js'
 
 // Contorno em espaço de tela (pós-processamento).
 //
@@ -13,6 +14,7 @@ import { FXAAShader } from 'three/examples/jsm/shaders/FXAAShader.js'
 //    pequenos (sobrancelha/olho, nariz) não geram linha, mas a borda do corpo
 //    contra o fundo ou um braço na frente do tronco geram.
 // 4. Opcional: FXAA na imagem final, para suavizar o serrilhado do contorno.
+// 5. Opcional: bloom (bloom.js) somado por cima da imagem final.
 
 export const outlineParams = {
   uOutlineColor: { value: new THREE.Color(0x000000) },
@@ -142,6 +144,7 @@ export class ScreenOutline {
       })
     )
     this.fxaaQuad.material.uniforms.tDiffuse.value = this.edgeTarget.texture
+    this.bloom = new Bloom()
 
     this.quad = new FullScreenQuad(
       new THREE.ShaderMaterial({
@@ -189,6 +192,7 @@ export class ScreenOutline {
     this.colorTarget.setSize(size.x, size.y)
     this.normalTarget.setSize(size.x, size.y)
     this.edgeTarget.setSize(size.x, size.y)
+    this.bloom.setSize(size.x, size.y)
     this.fxaaQuad.material.uniforms.resolution.value.set(1 / size.x, 1 / size.y)
     const u = this.quad.material.uniforms
     u.uResolution.value.copy(size)
@@ -219,11 +223,19 @@ export class ScreenOutline {
     scene.overrideMaterial = null
     scene.background = background
 
-    if (outlineOptions.fxaa) {
+    const useBloom = bloomOptions.enabled && bloomOptions.strength > 0
+    if (outlineOptions.fxaa || useBloom) {
       renderer.setRenderTarget(this.edgeTarget)
       this.quad.render(renderer)
+      if (useBloom) this.bloom.build(renderer, this.edgeTarget.texture)
       renderer.setRenderTarget(null)
-      this.fxaaQuad.render(renderer)
+      if (outlineOptions.fxaa) {
+        this.fxaaQuad.render(renderer)
+      } else {
+        this.bloom.copy.material.uniforms.tDiffuse.value = this.edgeTarget.texture
+        this.bloom.copy.render(renderer)
+      }
+      if (useBloom) this.bloom.add(renderer)
     } else {
       renderer.setRenderTarget(null)
       this.quad.render(renderer)

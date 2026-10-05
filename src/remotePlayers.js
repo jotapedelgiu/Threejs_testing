@@ -3,6 +3,7 @@ import { RemoteCar } from './remoteCar.js'
 import { createToonMaterial } from './toon.js'
 import { readColors, writeColors, setBoostGlow, setUltimateGlow } from './paint.js'
 import { Presence } from './presence.js'
+import { newKills } from './match.js'
 
 // Jogadores remotos: um RemoteCar por peer, com pintura própria, placar e
 // estado de boost. Cria o carro no primeiro estado recebido e remove quando o
@@ -75,9 +76,15 @@ export class RemotePlayers {
     // Mísseis novos (o primeiro estado só marca a contagem: não relança os antigos)
     const missilesFired = player.ms === undefined ? 0 : Math.max(0, state.ms - player.ms)
     player.ms = state.ms
+    // Placar: quem o nocauteou desde o último estado (para o kill feed)
+    const killedBy = newKills(player.koBy, state.koBy)
+    player.koBy = state.koBy
+    player.asBy = state.asBy
+    player.xpBy = state.xpBy
+    player.deaths = state.deaths
     const liveryChanged = state.livery !== player.livery
     player.livery = state.livery
-    return { player, liveryChanged, knockedOut, ultStarted, missilesFired }
+    return { player, liveryChanged, knockedOut, ultStarted, missilesFired, killedBy }
   }
 
   remove(peerId) {

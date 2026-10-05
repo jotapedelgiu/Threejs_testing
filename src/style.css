@@ -36,19 +36,24 @@ html, body {
   margin-top: 4px;
 }
 
-/* --- Placar ---------------------------------------------------------------- */
+/* --- Placar (segure TAB) ------------------------------------------------------ */
 .scoreboard {
   position: fixed;
-  left: 24px;
-  top: 24px;
-  min-width: 200px;
-  padding: 12px 14px;
-  background: rgba(10, 12, 18, 0.72);
+  left: 50%;
+  top: 14vh;
+  transform: translateX(-50%);
+  width: min(640px, calc(100vw - 32px));
+  padding: 14px 16px;
+  background: rgba(10, 12, 18, 0.85);
   border: 2px solid #000;
   border-radius: 10px;
   box-shadow: 3px 3px 0 #000;
   color: #fff;
   pointer-events: none;
+}
+
+.scoreboard:not(.open) {
+  display: none;
 }
 
 .scoreboard h2 {
@@ -63,15 +68,29 @@ html, body {
 .scoreboard ol {
   list-style: none;
   display: grid;
-  gap: 6px;
+  gap: 4px;
 }
 
 .scoreboard li {
   display: grid;
-  grid-template-columns: 12px 1fr 70px 30px;
+  grid-template-columns: 12px 1fr 44px 70px repeat(4, 40px);
   align-items: center;
   gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
   font-size: 14px;
+}
+
+.scoreboard li.head {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+}
+
+.scoreboard li.me {
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .scoreboard li.me .name {
@@ -88,7 +107,11 @@ html, body {
 .scoreboard .points {
   font-weight: 800;
   font-variant-numeric: tabular-nums;
-  text-align: right;
+  text-align: center;
+}
+
+.scoreboard li.head span:nth-child(n + 3) {
+  text-align: center;
 }
 
 .scoreboard li.ko {
@@ -213,6 +236,28 @@ html, body {
 .health-hud .hp-max {
   font-size: 15px;
   opacity: 0.7;
+}
+
+/* Progresso até o próximo nível (dano acumulado), em cima da vida */
+.health-hud .hp-xp {
+  position: relative;
+  height: 9px;
+  margin: 0 0 6px;
+  border: 3px solid #000;
+  border-radius: 5px;
+  background: rgba(10, 12, 18, 0.7);
+  box-shadow: 3px 3px 0 #000;
+  transform: skewX(-12deg);
+  overflow: hidden;
+}
+
+.health-hud .hp-xp-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 0;
+  background: linear-gradient(#6fc3ff, #1e7bff);
+  box-shadow: inset 0 2px 0 rgba(255, 255, 255, 0.4);
+  transition: width 0.25s ease-out;
 }
 
 /* Moldura inclinada, estilo quadrinhos */
@@ -711,7 +756,6 @@ body.in-menu .car-tags {
   display: none;
 }
 
-.car-tag-name,
 .car-tag-bar {
   position: absolute;
   left: 0;
@@ -725,6 +769,11 @@ body.in-menu .car-tags {
 }
 
 .car-tag-name {
+  /* Em cima da barra, centrado nela */
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
   max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -740,17 +789,45 @@ body.in-menu .car-tags {
 }
 
 .car-tag-bar {
-  width: 58px;
-  height: 10px;
-  background: rgba(10, 12, 18, 0.75);
-  border: 2px solid #000;
-  border-radius: 4px;
-  box-shadow: 2px 2px 0 #000;
+  /* A moldura fica centrada no carro; o número pendura à direita dela */
+  width: 70px;
+  height: 14px;
+}
+
+.car-tag-num {
+  position: absolute;
+  left: calc(100% + 8px);
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 900;
+  font-style: italic;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 2px 2px 0 #000;
+  -webkit-text-stroke: 1px #000;
+}
+
+.car-tag-num.low {
+  color: #ff3d3d;
+}
+
+/* Mesma moldura inclinada da barra do HUD, em miniatura */
+.car-tag-frame {
+  position: absolute;
+  inset: 0;
+  border: 3px solid #000;
+  border-radius: 5px;
+  background: rgba(10, 12, 18, 0.7);
+  box-shadow: 3px 3px 0 #000;
+  transform: skewX(-12deg);
   overflow: hidden;
 }
 
-.car-tag-bar .fill,
-.car-tag-bar .lag {
+.car-tag-frame .fill,
+.car-tag-frame .lag,
+.car-tag-frame .ticks {
   position: absolute;
   left: 0;
   top: 0;
@@ -758,14 +835,21 @@ body.in-menu .car-tags {
   width: 100%;
 }
 
-.car-tag-bar .fill {
+.car-tag-frame .fill {
+  /* Brilho em cima, sombra embaixo, como no HUD */
+  box-shadow: inset 0 3px 0 rgba(255, 255, 255, 0.35), inset 0 -3px 0 rgba(0, 0, 0, 0.25);
   transition: width 0.12s ease-out, background 0.3s;
 }
 
 /* Rastro do dano: espera um instante e escorre */
-.car-tag-bar .lag {
+.car-tag-frame .lag {
   background: #fff4c2;
   transition: width 0.5s cubic-bezier(0.5, 0, 0.75, 0) 0.4s;
+}
+
+/* Divisões a cada 10 de vida */
+.car-tag-frame .ticks {
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), rgba(0, 0, 0, 0.35) calc(10% - 1px) 10%);
 }
 
 /* --- Ultimate ----------------------------------------------------------------- */
@@ -1102,4 +1186,245 @@ body.in-menu .test-panel {
 .player-hud.missile-mode .hint {
   color: #ffb070;
   opacity: 1;
+}
+
+/* --- Partida: relógio, kill feed e resultado ---------------------------------- */
+.match-clock {
+  position: fixed;
+  left: 50%;
+  top: 14px;
+  translate: -50% 0;
+  padding: 2px 16px;
+  font-size: 26px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.82);
+  border: 3px solid #000;
+  border-radius: 10px;
+  box-shadow: 3px 3px 0 #000;
+  pointer-events: none;
+  z-index: 9;
+}
+
+.match-clock[hidden],
+body.in-menu .match-clock {
+  display: none;
+}
+
+.match-clock.urgent {
+  color: #ff3d3d;
+  animation: hp-low 0.5s ease-in-out infinite alternate;
+}
+
+/* O aviso do ultimate desce para não cobrir o relógio */
+.ult-banner {
+  top: 64px;
+}
+
+.kill-feed {
+  position: fixed;
+  right: 20px;
+  top: 96px;
+  display: grid;
+  justify-items: end;
+  gap: 4px;
+  pointer-events: none;
+  z-index: 8;
+}
+
+body.in-menu .kill-feed {
+  display: none;
+}
+
+.kill-feed .kill {
+  padding: 3px 10px;
+  font-size: 13px;
+  font-weight: 800;
+  color: #fff;
+  background: rgba(10, 12, 18, 0.8);
+  border: 2px solid #000;
+  border-radius: 6px;
+  animation: card-in 0.25s ease-out;
+}
+
+.kill-feed .kill.mine {
+  border-color: #ffd21f;
+}
+
+.kill-feed .killer {
+  color: #ffd23f;
+}
+
+.kill-feed .icon {
+  opacity: 0.7;
+}
+
+.menu .result-title {
+  text-align: center;
+  font-size: 38px;
+  font-weight: 900;
+  font-style: italic;
+  color: #fff;
+  -webkit-text-stroke: 2px #000;
+  text-shadow: 4px 4px 0 #000;
+  margin-bottom: 6px;
+}
+
+.menu .result-title.win {
+  color: #ffd23f;
+}
+
+.menu .result-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 40px 40px 40px;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  font-weight: 700;
+  background: #1c2330;
+  border: 2px solid #000;
+  border-radius: 8px;
+}
+
+.menu .result-row.head {
+  background: transparent;
+  border-color: transparent;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.6;
+  padding-top: 0;
+  padding-bottom: 0;
+}
+
+.menu .result-row span:nth-child(n + 3) {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.menu .result-row.winner {
+  border-color: #ffd23f;
+  box-shadow: 0 0 12px rgba(255, 210, 63, 0.35);
+}
+
+.menu .result-row.winner .rank {
+  color: #ffd23f;
+}
+
+.menu .result-row .kills {
+  font-size: 18px;
+  font-weight: 900;
+}
+
+.menu .result-row .tag {
+  margin-left: 8px;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+  padding: 1px 6px;
+  border: 2px solid #000;
+  border-radius: 999px;
+  background: #2b3445;
+}
+
+/* --- Progressão (níveis) ---------------------------------------------------------- */
+.scoreboard .level {
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.75;
+}
+
+.health-hud .hp-level {
+  margin-left: auto;
+  padding: 1px 8px;
+  font-size: 14px;
+  letter-spacing: 0.08em;
+  color: #fff27a;
+  border: 2px solid #000;
+  border-radius: 6px;
+  background: rgba(10, 12, 18, 0.7);
+}
+
+.health-hud .hp-level.up {
+  animation: level-up 0.9s ease-out;
+}
+
+@keyframes level-up {
+  0% { transform: scale(2); background: #fff27a; color: #000; }
+  100% { transform: scale(1); }
+}
+
+.hit-popup.levelup {
+  font-size: 44px;
+  color: #fff27a;
+}
+
+/* Aviso de nível: cartão amarelo chapado, borda preta grossa e sombra dura,
+   como os outros cartões do jogo */
+.ult-banner.levelup {
+  padding: 8px 28px 10px;
+  background: #ffd21f;
+  color: #000;
+  border-color: #000;
+  box-shadow: 5px 5px 0 #000;
+  animation: card-in 0.3s cubic-bezier(0.2, 1.4, 0.4, 1), ult-pulse 0.5s ease-in-out infinite alternate;
+}
+
+.ult-banner.levelup .ult-title {
+  font-size: 30px;
+  color: #fff;
+  -webkit-text-stroke: 2px #000;
+  text-shadow: 3px 3px 0 #000;
+}
+
+.ult-banner.levelup .ult-sub {
+  color: #000;
+  opacity: 1;
+}
+
+/* --- Setas para itens fora da tela ------------------------------------------ */
+.item-arrows {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+
+body.in-menu .item-arrows {
+  display: none;
+}
+
+.item-arrow {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+  will-change: transform;
+}
+
+.item-arrow[hidden] {
+  display: none;
+}
+
+/* Seta apontando para +x (a rotação do JS aponta para o item), com contorno preto */
+.item-arrow .tip {
+  position: absolute;
+  left: -11px;
+  top: -11px;
+  width: 22px;
+  height: 22px;
+  overflow: visible;
+  filter: drop-shadow(2px 2px 0 #000);
+}
+
+.item-arrow .tip polygon {
+  fill: var(--arrow);
+  stroke: #000;
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  paint-order: stroke;
 }

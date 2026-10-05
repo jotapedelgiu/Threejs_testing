@@ -6,7 +6,9 @@ import { ScreenOutline } from './outline.js'
 import { Background, Sun, Arena } from './environment.js'
 import { GroupCamera } from './groupCamera.js'
 import { ControlPanel } from './panel.js'
-import { ScoreUI, PlayerHud, CarTags, UltimateBanner } from './hud.js'
+import { ScoreUI, PlayerHud, CarTags, ItemArrows, UltimateBanner, MatchClock, KillFeed } from './hud.js'
+import { KillTracker, MATCH_TIME, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock } from './match.js'
+import { levelFor, levelProgress, damageScale, scaleDamage, maxHealthFor, xpForHit, xpForKill, repeatScale } from './progression.js'
 import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
 import { readDriveInput, isDown, wasPressed } from './input.js'
@@ -52,7 +54,7 @@ const NET_SEND_INTERVAL = 1 / 20 // estados por segundo para os outros jogadores
 const MAX_BOOSTS = 2 // estoque de boosts (turbo é forte: precisa ser raro)
 // Bastões com espinhos
 const BAT_URL = `${import.meta.env.BASE_URL}models/Bastao.glb`
-const BAT_COUNT = 5
+const BAT_COUNT = 7
 const BAT_RADIUS = 0.7   // m: corpo + boa parte dos espinhos
 const BAT_BOUNCE = 1     // ricochete do carro no bastão (espinho repele forte)
 const BAT_KEEP_CLEAR = 12 // m livres no centro, onde os carros nascem
@@ -84,6 +86,7 @@ const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('scen
 const quality = {
   maxPixelRatio: 1.5,
   shadowSize: 1024,
+  maxFps: 60, // 0 = sem limite
   showFps: new URLSearchParams(location.search).has('fps'),
 }
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, quality.maxPixelRatio))
@@ -104,7 +107,10 @@ const groupCamera = new GroupCamera(camera)
 const scoreUI = new ScoreUI()
 const playerHud = new PlayerHud(MAX_BOOSTS)
 const carTags = new CarTags() // nome e vida presos a cada carro
+const itemArrows = new ItemArrows() // setas na borda da tela para boosts e ultimate fora da vista
 const ultBanner = new UltimateBanner()
+const matchClock = new MatchClock()
+const killFeed = new KillFeed()
 const ultView = new UltimateView(scene)
 const medViews = Array.from({ length: MEDKIT.maxZones }, () => new MedkitView(scene)) // uma por zona
 // Mapa da partida: posições dos bastões sorteadas por uma semente nova a cada
@@ -245,6 +251,17 @@ let ultNews = null      // anúncio rápido na faixa: { title, sub, tone, until 
 const medkit = new MedkitDirector()
 const zoneHeal = new ZoneHealing()
 let medResend = 0       // anfitrião: reenvia o estado de tempos em tempos
+// Partida (match.js): 10 min, ganha quem tiver mais abates. O placar sai do
+// "quem me nocauteou" (koBy) de cada um; o relógio é do anfitrião
+const kills = new KillTracker() // minhas mortes e quem me abateu
+let matchLeft = MATCH_TIME      // s até acabar
+let matchResend = 0             // anfitrião: reenvia o relógio de tempos em tempos
+const departed = new Map()      // quem saiu no meio: { name, koBy, deaths } (os números ficam)
+// Progressão (progression.js): o dano causado acumulado sobe o nível (mais
+// dano e mais vida). O nível de todos sai do placar, recalculado a cada passo
+let damageTally = new Map()     // id -> XP ganho
+let myLevel = 1
+const levelOf = (id) => levelFor(damageTally.get(id) ?? 0)
 let healShown = 0       // cura acumulada ainda não mostrada ("+N VIDA" a cada 1 s)
 let healPopupTimer = 0
 let netTimer = 0
@@ -359,13 +376,24 @@ function receiveHit(hit, attackerId) {
   if (hit.boosted) boostedUntil = now + WALL_DAMAGE_WINDOW
   if (hit.blast) blastUntil = now + WALL_DAMAGE_WINDOW
   if (hit.stun && !health.isShielded) stunUntil = Math.max(stunUntil, now + hit.stun)
-  takeDamage(hit.damage)
+  kills.noteHit(attackerId, now) // se eu cair (até de parede/espinho), o abate é dele
+  takeDamage(hit.damage, attackerId)
 }
 
-function takeDamage(amount) {
-  const { knockedOut } = health.damage(amount)
+// `by`: quem causou o dano (rende XP a ele, pelos níveis que eu enxergo no
+// instante do golpe); parede/espinho não têm
+function takeDamage(amount, by = null) {
+  const now = loop.simTime
+  const attacker = by ? levelOf(by) : 0
+  const repeat = by ? repeatScale(kills.sinceKoBy(by, now)) : 1
+  const { dealt, knockedOut } = health.damage(amount)
+  kills.noteXp(by, Math.round(xpForHit(dealt, attacker, myLevel) * repeat))
   if (knockedOut) {
     scoreUI.popup(car.root.position, 'ko')
+    const killRepeat = repeatScale(kills.sinceKoBy(kills.lastHit?.by, now)) // antes de registrar este abate
+    const killer = kills.knockedOut(now)
+    if (killer) kills.noteXp(killer, Math.round(xpForKill(levelOf(killer), myLevel) * killRepeat))
+    if (killer) killFeed.add(playerName(killer), 'You')
     car.endBoost()
     deathSpot = { x: car.root.position.x, z: car.root.position.z }
   }
@@ -467,6 +495,24 @@ function beginMatch(map, late = false) {
   ultimate.reset()
   ultSlot.reset()
   storm.reset()
+  // Placar e relógio do zero (também em "Play again")
+  kills.reset()
+  matchLeft = MATCH_TIME
+  departed.clear()
+  for (const p of remotes.values()) {
+    p.koBy = {}
+    p.asBy = {}
+    p.xpBy = {}
+    p.deaths = 0
+  }
+  for (const d of dummies.values()) {
+    d.kills.reset()
+    d.revive()
+  }
+  health.reset()
+  damageTally = new Map()
+  myLevel = 1
+  boosts = 0
   ultClaimed = ultGot = -1
   ultNews = null
   medkit.reset()
@@ -500,6 +546,7 @@ function startMultiplayer() {
       if (inMatch()) net.sendLayout({ ...layout, orbs: orbs.snapshot() }, peerId)
       if (inMatch() && amHost()) net.sendUlt(ultimate.snapshot(), peerId)
       if (inMatch() && amHost()) net.sendMedkit(medkit.snapshot(), peerId)
+      if (inMatch() && amHost()) net.sendMatch({ left: matchLeft, over: phase === 'over' }, peerId)
     },
     // Ultimate: o estado vem do anfitrião; pedidos só o anfitrião atende
     onUlt(state) {
@@ -524,7 +571,13 @@ function startMultiplayer() {
       updateOrbCount()
     },
     onStart(map) {
-      if (phase === 'lobby') beginMatch(map)
+      if (phase === 'lobby' || phase === 'over') beginMatch(map) // "Play again" também
+    },
+    // Relógio da partida: vale o do anfitrião
+    onMatch(clock) {
+      if (phase !== 'playing' || amHost()) return
+      if (clock.over) endMatch()
+      else if (Math.abs(clock.left - matchLeft) > 0.5) matchLeft = clock.left
     },
     onLayout(theirs) {
       if (phase === 'lobby') {
@@ -544,6 +597,9 @@ function startMultiplayer() {
       if (bat.damage && position) scoreUI.popup(position, 'spike', bat.damage)
     },
     onPeerLeave(peerId) {
+      // Quem sai no meio continua no placar (os abates que deu e levou ficam)
+      const gone = remotes?.get(peerId)
+      if (gone && inMatch()) departed.set(peerId, { name: playerName(peerId), koBy: gone.koBy ?? {}, asBy: gone.asBy ?? {}, xpBy: gone.xpBy ?? {}, deaths: gone.deaths ?? 0 })
       roster.delete(peerId)
       remotes?.remove(peerId)
       refreshLobby() // se o anfitrião saiu, outro assume
@@ -563,7 +619,7 @@ function startMultiplayer() {
       } else if (hit.blast) {
         if (position) scoreUI.popup(position, 'blast', hit.damage) // Onda de choque
       } else if (hit.damage && position) {
-        scoreUI.popup(position, hit.boosted ? 'turbo' : tierOfDamage(hit.damage), hit.damage)
+        scoreUI.popup(position, hit.boosted ? 'turbo' : tierOfDamage(hit.damage, damageScale(levelOf(attackerId))), hit.damage)
       }
       if (hit.target === net.selfId && inMatch()) receiveHit(hit, attackerId)
     },
@@ -581,7 +637,9 @@ function startMultiplayer() {
 // Estado do carro de outro jogador (ou de um boneco do campo de testes)
 function handlePeerState(peerId, state) {
   if (!remotes) return // carro ainda carregando
-  const { player, liveryChanged, knockedOut, ultStarted, missilesFired: fired } = remotes.applyState(peerId, state, performance.now() / 1000)
+  const { player, liveryChanged, knockedOut, ultStarted, missilesFired: fired, killedBy } = remotes.applyState(peerId, state, performance.now() / 1000)
+  // Kill feed: quem abateu esse jogador desde o último estado
+  for (const killer of killedBy) killFeed.add(killer === net.selfId ? 'You' : playerName(killer), playerName(peerId), killer === net.selfId)
   if (knockedOut) scoreUI.popup(player.car.position, 'ko')
   // Mísseis que ele disparou (contador no estado: não se perde nenhum)
   for (let i = 0; i < fired; i++) launchMissile(player.car.root.position, state.yaw, peerId)
@@ -597,7 +655,7 @@ function handlePeerState(peerId, state) {
 
 // Só no `npm run dev`: acesso pelo console do navegador para depuração
 function exposeDebug() {
-  if (import.meta.env.DEV) window.__game = { launchMissile, missiles, get boosts() { return boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
+  if (import.meta.env.DEV) window.__game = { kills, match: { get left() { return matchLeft }, set left(v) { matchLeft = v } }, launchMissile, missiles, get boosts() { return boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
 }
 
 // --- Regras da partida (rodam no passo fixo) -------------------------------------
@@ -631,12 +689,13 @@ function collideWalls(simTime) {
   // Paredes de pneus: mesmo ricochete, mas pneu amortece: o combo do turbo
   // não dói aqui, só o da Onda de choque (sumido no nocaute, atravessa)
   if (tireWalls && !health.isKO) {
-    for (const { normal, depth } of tireWalls.testCar(car.root.position, car.yaw, footprint)) hitWall(normal, depth, simTime, true)
+    for (const { index, normal, depth } of tireWalls.testCar(car.root.position, car.yaw, footprint)) hitWall(normal, depth, simTime, true, index)
   }
 }
 
-function hitWall(normal, depth, simTime, tires = false) {
+function hitWall(normal, depth, simTime, tires = false, index = -1) {
   const wallSpeed = car.hitWall(normal, depth)
+  if (tires) tireWalls.kick(index, -normal.x, -normal.z, wallSpeed)
   const combo = tires ? simTime < blastUntil : simTime < boostedUntil
   if (combo && wallSpeed >= WALL_DAMAGE_MIN_SPEED) {
     boostedUntil = blastUntil = 0 // o dano extra conta uma vez só
@@ -700,7 +759,7 @@ function collideCars(simTime, wallTime) {
     const target = remotes.get(peerId)
     const immune = health.isKO || target.ko || target.shield
     const tier = boosted ? 'turbo' : impactTier(judged.impact)
-    const damage = immune || !tier ? 0 : DAMAGE[tier]
+    const damage = immune || !tier ? 0 : scaleDamage(DAMAGE[tier], myLevel)
     const push = impulse * (boosted ? BOOST_PUSH : 1) // a vítima vai no sentido oposto
     net.sendHit({ target: peerId, ix: -hit.normal.x * push, iz: -hit.normal.z * push, damage, boosted })
     hitsSent.ready(peerId, simTime)
@@ -723,6 +782,10 @@ function sendState(dt, simTime) {
     shield: health.isShielded,
     ult: ultSlot.active,
     ms: missilesFired,
+    deaths: kills.deaths,
+    koBy: kills.koBy,
+    asBy: kills.asBy,
+    xpBy: kills.xpBy,
   })
 }
 
@@ -765,12 +828,13 @@ function enterTestRange(name) {
       },
       reviveDummies: () => dummies.forEach((d) => d.revive()),
       heal() {
-        health.hp = MAX_HEALTH
+        health.hp = health.max
         health.koTimer = 0
       },
       hurt: () => takeDamage(30),
       fillBoosts: () => (boosts = MAX_BOOSTS),
       exit: () => location.assign(location.pathname),
+      endMatch: () => endMatch(),
     },
   })
   exposeDebug()
@@ -779,7 +843,16 @@ function enterTestRange(name) {
 
 // Batida "mandada" para um boneco: aplica direto nele
 function hitDummy(hit) {
-  dummies.get(hit.target)?.receive(hit, loop.simTime)
+  const d = dummies.get(hit.target)
+  if (!d) return
+  const attacker = levelOf(net.selfId)
+  const victim = levelOf(d.id)
+  const repeat = repeatScale(d.kills.sinceKoBy(net.selfId, loop.simTime))
+  d.receive(
+    hit, loop.simTime, net.selfId,
+    (dealt) => Math.round(xpForHit(dealt, attacker, victim) * repeat),
+    Math.round(xpForKill(attacker, victim) * repeat),
+  )
 }
 
 // Boneco novo no primeiro lugar livre (sem boneco nem obstáculo)
@@ -806,7 +879,7 @@ function updateDummies(dt, simTime) {
     // Zona de cura vale para eles também
     if (medkit.contains(d.x, d.z)) {
       d.zoneHeal ??= new ZoneHealing()
-      const healed = d.health.heal(d.zoneHeal.update(dt, d.health.hp))
+      const healed = d.health.heal(d.zoneHeal.update(dt, d.health.hp, d.health.max))
       d.healShown = (d.healShown ?? 0) + healed
     }
     if ((d.healTimer = (d.healTimer ?? 0) + dt) >= 1) {
@@ -837,10 +910,11 @@ function updateDummies(dt, simTime) {
 function collideDummy(d, simTime) {
   const c = d.car, pos = c.root.position
   const damage = (amount, kind) => {
-    if (d.health.damage(amount).dealt) scoreUI.popup(pos, kind, amount)
+    if (d.hurt(amount, simTime).dealt) scoreUI.popup(pos, kind, amount)
   }
-  const wall = (normal, depth, tires) => {
+  const wall = (normal, depth, tires, index) => {
     const speed = c.hitWall(normal, depth)
+    if (tires) tireWalls.kick(index, -normal.x, -normal.z, speed)
     const combo = tires ? simTime < d.blastUntil : simTime < d.boostedUntil
     if (combo && speed >= WALL_DAMAGE_MIN_SPEED) {
       d.boostedUntil = d.blastUntil = 0
@@ -848,7 +922,7 @@ function collideDummy(d, simTime) {
     }
   }
   for (const { normal, depth } of testArenaWalls(pos, c.yaw, footprint, arena.halfX, arena.halfZ)) wall(normal, depth, false)
-  if (tireWalls) for (const { normal, depth } of tireWalls.testCar(pos, c.yaw, footprint)) wall(normal, depth, true)
+  if (tireWalls) for (const { index, normal, depth } of tireWalls.testCar(pos, c.yaw, footprint)) wall(normal, depth, true, index)
   const hit = bats?.testCar(pos, c.yaw, footprint)
   if (!hit) return
   c.separate(hit.normal, hit.depth)
@@ -867,10 +941,12 @@ function dummyHitsMe(d, normal, impact, simTime) {
   if (impulse < MIN_IMPULSE || !d.hitCooldown.ready('eu', simTime)) return
   d.car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(-impulse))
   car.applyImpulse(tmpImpulse.copy(normal).multiplyScalar(impulse))
+  kills.noteHit(d.id, simTime) // se eu cair, o abate é dele
   const tier = impactTier(impact)
   if (!tier || health.isShielded) return
-  scoreUI.popup(car.root.position, tier, DAMAGE[tier])
-  takeDamage(DAMAGE[tier])
+  const damage = scaleDamage(DAMAGE[tier], levelOf(d.id))
+  scoreUI.popup(car.root.position, tier, damage)
+  takeDamage(damage, d.id)
 }
 
 // --- Ultimate ------------------------------------------------------------------------
@@ -939,6 +1015,8 @@ function ultTargets() {
 const missiles = []
 const missileShots = [] // só os MissileShot, para o desenho (reaproveitada)
 let slowUntil = 0       // lento até este instante da simulação
+let missileShotsLeft = 0 // mísseis que faltam na rajada
+let missileClock = 0     // s até o próximo
 let missilesFired = 0   // vai no estado do carro: os outros lançam um a cada aumento
 
 function launchMissile(carPosition, yaw, owner) {
@@ -952,8 +1030,9 @@ function updateMissiles(dt, simTime) {
   for (const { shot, owner } of missiles) {
     // O meu míssil acerta quem estiver no caminho (ele continua voando)
     for (const h of shot.update(dt, owner === mine ? ultTargets() : [])) {
-      net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage: h.damage, boosted: false, rocket: true })
-      scoreUI.popup(remotes.get(h.id).car.root.position, 'rocket', h.damage)
+      const damage = scaleDamage(h.damage, myLevel)
+      net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage, boosted: false, rocket: true })
+      scoreUI.popup(remotes.get(h.id).car.root.position, 'rocket', damage)
     }
   }
   for (let i = missiles.length - 1; i >= 0; i--) if (missiles[i].shot.expired) missiles.splice(i, 1)
@@ -1035,9 +1114,18 @@ function updateUltimate(dt, stunned) {
     if (kind === 'overcharge') storm.reset()
     if (kind === 'shockwave') fireShockwave()
     if (kind === 'missile') {
-      launchMissile(car.root.position, car.yaw, net.selfId)
-      missilesFired++
+      car.halt()
+      missileShotsLeft = ULTIMATES.missile.shots
+      missileClock = 0
     }
+  }
+  if (ultSlot.active !== 'missile') missileShotsLeft = 0 // (nocaute cancela o resto da rajada)
+  // Rajada: um míssil a cada intervalo, para onde o carro está virado agora
+  if (missileShotsLeft > 0 && (missileClock -= dt) <= 0) {
+    missileClock += ULTIMATES.missile.shotInterval
+    missileShotsLeft--
+    launchMissile(car.root.position, car.yaw, net.selfId)
+    missilesFired++
   }
   if (health.isKO) ultSlot.stop() // nocauteado: o poder em uso acaba
   if (ultSlot.active !== 'shockwave') shockCast = null // (cancela a onda no meio)
@@ -1046,8 +1134,9 @@ function updateUltimate(dt, stunned) {
   // Onda de choque: a frente anda pela faixa e acerta quem estiver nela
   if (shockCast) {
     for (const h of shockCast.update(dt, ultTargets())) {
-      net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage: h.damage, boosted: true, blast: true })
-      scoreUI.popup(remotes.get(h.id).car.root.position, 'blast', h.damage)
+      const damage = scaleDamage(h.damage, myLevel)
+      net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage, boosted: true, blast: true })
+      scoreUI.popup(remotes.get(h.id).car.root.position, 'blast', damage)
     }
     if (shockCast.done) shockCast = null
   }
@@ -1057,9 +1146,10 @@ function updateUltimate(dt, stunned) {
   for (const s of storm.update(dt, pos.x, pos.z, ultTargets())) {
     const target = remotes.get(s.id)
     const push = storm.spec.push
-    net.sendHit({ target: s.id, ix: s.dx * push, iz: s.dz * push, damage: s.damage, boosted: false, stun: s.stun, zap: true })
+    const damage = scaleDamage(s.damage, myLevel)
+    net.sendHit({ target: s.id, ix: s.dx * push, iz: s.dz * push, damage, boosted: false, stun: s.stun, zap: true })
     ultView.bolt(tmpBoltFrom.copy(pos).setY(2.6), tmpBoltTo.copy(target.car.root.position).setY(0.8))
-    scoreUI.popup(target.car.root.position, s.stun ? 'stun' : 'zap', s.damage)
+    scoreUI.popup(target.car.root.position, s.stun ? 'stun' : 'zap', damage)
   }
 }
 
@@ -1161,7 +1251,7 @@ function updateMedkit(dt) {
   if (!inside) {
     zoneHeal.carry = 0
   } else {
-    healShown += health.heal(zoneHeal.update(dt, health.hp))
+    healShown += health.heal(zoneHeal.update(dt, health.hp, health.max))
   }
   // "+N VIDA" uma vez por segundo, somando o que curou
   healPopupTimer += dt
@@ -1187,20 +1277,26 @@ function updateCountdown(dt) {
 // --- Loop -------------------------------------------------------------------------
 // Passo fixo para tudo que muda o estado do jogo; desenho separado (loop.js)
 const loop = new FixedStepLoop({
+  getMaxFps: () => quality.maxFps,
   step(dt, simTime, wallTime) {
     orbs.update(dt)
-    if (!car || !inMatch()) return
+    if (!car || !inMatch()) return // (fim de partida também: tudo para atrás do resultado)
     updateCountdown(dt)
+    if (phase === 'playing' && !testMode) updateMatchClock(dt)
     const playing = phase === 'playing'
     car.savePrevious()
     if (health.update(dt)) respawn()
+    if (net) updateProgression()
     if (playing && isDown('KeyR') && !health.isKO) car.reset()
     const stunned = simTime < stunUntil
     if (playing && !health.isKO && !stunned) updateBoost()
     // Nocauteado, atordoado ou na contagem não dirige, mas ainda pode ser empurrado
     // Lançando a Onda de choque: parado no lugar (ainda pode ser empurrado)
+    // Míssil: parado também, mas pode girar para mirar
     const rooted = ultSlot.active === 'shockwave'
-    car.update(dt, !playing || health.isKO || stunned || rooted ? NO_INPUT : readDriveInput())
+    const aiming = ultSlot.active === 'missile'
+    const drive = !playing || health.isKO || stunned || rooted ? NO_INPUT : aiming ? { throttle: 0, steer: readDriveInput().steer } : readDriveInput()
+    car.update(dt, drive)
     collideWalls(simTime)
     collideBats(simTime)
     if (net) {
@@ -1224,25 +1320,30 @@ const loop = new FixedStepLoop({
     if (car && inMatch()) sparks.update(dt, sparkEmitters())
     if (car && inMatch()) renderUltimate(dt)
     medViews.forEach((view, i) => view.update(dt, inMatch() ? medkit.zones[i] ?? null : null))
+    matchClock.show(inMatch() && !testMode ? formatClock(matchLeft) : null, matchLeft <= 30)
     bats?.update(dt)
+    tireWalls?.update(dt)
     sun.follow(groupCamera.center, Math.max(12, groupCamera.distance * 0.55))
     scoreUI.update(dt, camera) // depois da câmera: "+N" no lugar certo deste quadro
     if (car && inMatch()) carTags.update(camera, carTagSubjects())
+    if (car && inMatch() && !health.isKO) itemArrows.update(camera, car.root.position, arrowItems())
+    else itemArrows.hide()
     if (car && inMatch()) {
       playerHud.render({
         hp: health.hp,
+        maxHp: health.max,
+        level: myLevel,
+        levelProgress: levelProgress(damageTally.get(net.selfId) ?? 0),
         ko: health.isKO,
         shielded: health.isShielded,
         koTimer: health.koTimer,
         boosts,
         boosting: car.isBoosting,
         boostLocked: boostLocked(),
-        // Com o Míssil na mão, as bolinhas de boost mostram os mísseis que restam
-        missiles: ultSlot.kind === 'missile' ? ultSlot.charges : null,
         ult: {
           stored: ultSlot.kind && ULTIMATES[ultSlot.kind].name,
           ready: ultSlot.ready,
-          charges: ultSlot.charges,
+          charges: 1,
           storedLeft: ultSlot.storedLeft,
           active: ultSlot.active && ULTIMATES[ultSlot.active].name,
           activeLeft: ultSlot.activeLeft,
@@ -1301,6 +1402,18 @@ function sparkEmitters() {
 // nocaute junto com o carro
 const tagSubjects = []
 const tagPool = []
+// Itens que ganham seta (lista reaproveitada a cada quadro)
+const arrowList = []
+const arrowCenter = new THREE.Vector3()
+function arrowItems() {
+  arrowList.length = 0
+  if (!boostLocked()) {
+    for (const slot of orbs.slots) if (orbs.isActive(slot)) arrowList.push({ kind: 'boost', position: slot.mesh.position })
+  }
+  if (ultimate.phase === 'available' && ultSlot.canPickUp) arrowList.push({ kind: 'ultimate', position: arrowCenter })
+  return arrowList
+}
+
 function carTagSubjects() {
   tagSubjects.length = 0
   const add = (id, name, hp, position, visible) => {
@@ -1308,6 +1421,7 @@ function carTagSubjects() {
     s.id = id
     s.name = name
     s.hp = hp
+    s.maxHp = maxHealthFor(levelOf(id))
     s.position = position
     s.visible = visible
     s.powered = isPowered(id)
@@ -1316,27 +1430,111 @@ function carTagSubjects() {
   add(net.selfId, '', health.hp, car.root.position, !health.isKO) // o meu: só a barra
   for (const [peerId, player] of remotes.entries()) {
     const name = playerName(peerId)
-    add(peerId, isPowered(peerId) ? `⚡ ${name}` : name, player.hp, player.car.root.position, player.car.hasState && !player.ko)
+    const tag = `${name} · Lv${levelOf(peerId)}`
+    add(peerId, isPowered(peerId) ? `⚡ ${tag}` : tag, player.hp, player.car.root.position, player.car.hasState && !player.ko)
   }
   return tagSubjects
 }
 
 let scoreboardTimer = 0
 function renderScoreboard(dt) {
+  const open = isDown('Tab') && inMatch()
+  scoreUI.setVisible(open)
+  if (!open) return
   scoreboardTimer += dt
   if (scoreboardTimer < 0.25) return // 4x por segundo basta
   scoreboardTimer = 0
-  const players = [{ name: 'You', color: swatch(readColors(bodyMaterials)), hp: health.hp, ko: health.isKO, isMe: true }]
+  const tally = currentKills()
+  const assists = currentAssists()
+  const players = [{ name: myName || 'You', color: swatch(readColors(bodyMaterials)), hp: health.hp, maxHp: health.max, level: myLevel, ko: health.isKO, isMe: true, kills: tally.get(net.selfId) ?? 0, assists: assists.get(net.selfId) ?? 0, deaths: kills.deaths }]
   for (const [peerId, player] of remotes.entries()) {
     players.push({
       name: playerName(peerId),
       color: swatch(remotes.colors(player)),
       hp: player.hp,
+      maxHp: maxHealthFor(levelOf(peerId)),
+      level: levelOf(peerId),
       ko: player.ko,
       isMe: false,
+      kills: tally.get(peerId) ?? 0,
+      assists: assists.get(peerId) ?? 0,
+      deaths: player.deaths ?? 0,
     })
   }
   scoreUI.render(players)
+}
+
+// --- Partida: relógio, placar e fim --------------------------------------------------------
+// Abates de todos: soma o "quem me nocauteou" de todo mundo (inclusive de
+// quem já saiu)
+function currentKills() {
+  return tallyKills([kills, ...remotes.values(), ...departed.values()])
+}
+
+// XP ganho por todos (base do nível)
+function currentXp() {
+  return tallyXp([kills, ...remotes.values(), ...departed.values()])
+}
+
+function currentAssists() {
+  return tallyAssists([kills, ...remotes.values(), ...departed.values()])
+}
+
+// Passo fixo: níveis de todos pelo placar; subi de nível = mais vida máxima
+// (a vida sobe junto) e aviso na tela. Os bonecos sobem do mesmo jeito
+function updateProgression() {
+  damageTally = currentXp()
+  const level = levelOf(net.selfId)
+  if (level > myLevel) {
+    health.setMax(maxHealthFor(level))
+    scoreUI.popup(car.root.position, 'levelup', level)
+    announce(`⬆ LEVEL ${level}!`, `damage x${damageScale(level).toFixed(1)} · max HP ${health.max}`, 'levelup')
+  }
+  myLevel = level
+  for (const d of dummies.values()) d.health.setMax(maxHealthFor(levelOf(d.id)))
+}
+
+// Passo fixo: conta o tempo; o anfitrião acerta o relógio dos outros a cada 2 s
+function updateMatchClock(dt) {
+  matchLeft -= dt
+  const host = amHost()
+  if (host && (matchResend += dt) >= 2) {
+    matchResend = 0
+    net.sendMatch({ left: Math.max(0, matchLeft), over: false })
+  }
+  if (matchLeft <= 0) endMatch()
+}
+
+// Fim: carros param, aparece quem venceu e o placar de todos
+function endMatch() {
+  if (phase === 'over' || !inMatch()) return
+  phase = 'over'
+  matchLeft = 0
+  if (amHost()) net.sendMatch({ left: 0, over: true })
+  ultSlot.stop()
+  car.speedScale = 1
+  const tally = currentKills()
+  const assists = currentAssists()
+  const rows = [{ id: net.selfId, name: myName || 'You', kills: tally.get(net.selfId) ?? 0, assists: assists.get(net.selfId) ?? 0, deaths: kills.deaths, me: true }]
+  for (const [peerId, p] of remotes.entries()) {
+    rows.push({ id: peerId, name: playerName(peerId), kills: tally.get(peerId) ?? 0, assists: assists.get(peerId) ?? 0, deaths: p.deaths ?? 0, me: false })
+  }
+  for (const [peerId, p] of departed) rows.push({ id: peerId, name: `${p.name} (left)`, kills: tally.get(peerId) ?? 0, assists: assists.get(peerId) ?? 0, deaths: p.deaths, me: false })
+  const ranked = standings(rows)
+  menu.showResults(ranked, {
+    winnerIds: new Set(winners(ranked).map((p) => p.id)),
+    isHost: amHost(),
+    onAgain: playAgain,
+    onLeave: () => location.assign(location.pathname),
+  })
+}
+
+// Anfitrião: outra partida com mapa novo, placar zerado
+function playAgain() {
+  if (phase !== 'over' || !amHost()) return
+  const map = newLayout()
+  net.sendStart(map)
+  beginMatch(map)
 }
 
 // --- Tamanho da tela e qualidade -----------------------------------------------------

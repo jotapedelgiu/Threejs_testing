@@ -43,7 +43,9 @@ export class Orbs {
 
     this.scene = scene
     this.geometry = new THREE.IcosahedronGeometry(0.6, 2)
-    this.material = createToonMaterial({ color: '#9ff6ff', emissive: '#2a9fd6', glossiness: 10 })
+    this.material = createToonMaterial({ color: '#9ff6ff', emissive: '#7fe6ff', glossiness: 10 })
+    // Brilho pulsante: o emissivo passa do limite do bloom (bloom.js) e vira halo
+    this.emissiveBase = this.material.uniforms.uEmissive.value.clone()
     this.slots = []
     this.setCount(count)
   }
@@ -105,6 +107,9 @@ export class Orbs {
 
   update(dt) {
     this.time += dt
+    this.material.uniforms.uEmissive.value
+      .copy(this.emissiveBase)
+      .multiplyScalar(1.25 + Math.sin(this.time * 4) * 0.35)
     for (const slot of this.slots) {
       const active = this.isActive(slot)
       slot.mesh.visible = active

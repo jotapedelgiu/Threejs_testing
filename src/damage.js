@@ -12,13 +12,14 @@ const HIT_COOLDOWN = 0.6        // s entre batidas do mesmo par
 const TIE_MARGIN = 0.75         // m/s; diferença abaixo disso = os dois bateram
 
 // Balanceamento (ver bate-bate_balanceamento.xlsx): com 100 de vida e a
-// mistura típica de batidas, um nocaute leva ~45 s de briga (TTK alvo de
+// mistura típica de batidas, um nocaute leva ~36 s de briga (TTK alvo de
 // arena arcade). Os danos mantêm a proporção 1:2:3 entre leve, FORTE e
-// PANCADA; o TURBO vale 2 PANCADAS e o combo TURBO + PAREDE tira 1/3 da vida.
+// PANCADA; o TURBO vale mais que uma PANCADA e o combo TURBO + PAREDE tira
+// 1/3 da vida.
 export const DAMAGE = {
-  light: 4,
-  strong: 8,
-  smash: 12,
+  light: 5,
+  strong: 10,
+  smash: 15,
   turbo: 24, // batida com boost
   wall: 8,   // bater na parede logo depois de levar um TURBO
   spike: 6,  // bater num bastão com espinhos
@@ -49,10 +50,13 @@ export function impactDamage(impactSpeed) {
   return tier ? DAMAGE[tier] : 0
 }
 
-/** Faixa de um dano recebido pela rede (para escolher o texto na tela). */
-export function tierOfDamage(damage) {
-  if (damage >= DAMAGE.smash) return 'smash'
-  if (damage >= DAMAGE.strong) return 'strong'
+/**
+ * Faixa de um dano recebido pela rede (para escolher o texto na tela).
+ * `scale` = multiplicador de dano do nível de quem bateu (progression.js)
+ */
+export function tierOfDamage(damage, scale = 1) {
+  if (damage >= Math.round(DAMAGE.smash * scale)) return 'smash'
+  if (damage >= Math.round(DAMAGE.strong * scale)) return 'strong'
   return 'light'
 }
 
@@ -102,6 +106,7 @@ export const KO_TIME = 2.5       // s fora de combate ao zerar a vida
 export const RESPAWN_SHIELD = 2  // s sem levar dano depois de voltar
 
 export class Health {
+  max = MAX_HEALTH // sobe com o nível (progression.js)
   hp = MAX_HEALTH
   koTimer = 0     // > 0: nocauteado (não dirige)
   shieldTimer = 0 // > 0: acabou de voltar, não leva dano
@@ -130,9 +135,25 @@ export class Health {
   /** Recupera vida (nocauteado não). @returns quanto curou */
   heal(amount) {
     if (this.isKO || amount <= 0) return 0
-    const healed = Math.min(amount, MAX_HEALTH - this.hp)
+    const healed = Math.min(amount, this.max - this.hp)
     this.hp += healed
     return healed
+  }
+
+  /**
+   * Muda a vida máxima (subiu de nível). A vida ganha junto o que a máxima
+   * cresceu; nocauteado, já volta com a nova cheia.
+   */
+  setMax(max) {
+    if (max === this.max) return
+    if (!this.isKO) this.hp = Math.max(1, Math.min(max, this.hp + max - this.max))
+    this.max = max
+  }
+
+  /** Volta ao começo da partida: vida cheia de nível 1. */
+  reset() {
+    this.max = this.hp = MAX_HEALTH
+    this.koTimer = this.shieldTimer = 0
   }
 
   /** @returns {boolean} true no passo em que o nocaute acaba (hora de voltar) */
@@ -142,7 +163,7 @@ export class Health {
     this.koTimer -= dt
     if (this.koTimer > 0) return false
     this.koTimer = 0
-    this.hp = MAX_HEALTH
+    this.hp = this.max
     this.shieldTimer = RESPAWN_SHIELD
     return true
   }

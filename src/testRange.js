@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { Health, HitCooldown, WALL_DAMAGE_WINDOW } from './damage.js'
+import { KillTracker } from './match.js'
 
 // Campo de testes (botão no menu principal): partida só sua, sem rede, com
 // bonecos para bater e um painel para testar as ultimates.
@@ -30,6 +31,7 @@ export class TrainingDummy {
     car.spawnYaw = yaw
     car.reset()
     this.health = new Health()
+    this.kills = new KillTracker() // placar: quem abateu o boneco
     this.boostedUntil = 0 // levou batida com boost: bater na mureta até aqui dói mais
     this.blastUntil = 0   // levou a Onda de choque: mureta e pneus doem até aqui
     this.hitCooldown = new HitCooldown() // ele batendo em mim
@@ -44,12 +46,26 @@ export class TrainingDummy {
     return this.car.root.position.z
   }
 
-  /** Batida que um jogador "mandou" para o boneco: empurrão e dano. */
-  receive(hit, now) {
+  /**
+   * Batida que um jogador "mandou" para o boneco: empurrão e dano.
+   * `xpFor(dealt)` e `killXp`: XP do golpe e do abate, que o boneco (a vítima) calcula.
+   */
+  receive(hit, now, attacker, xpFor = (dealt) => dealt, killXp = 0) {
     this.car.applyImpulse(tmpImpulse.set(hit.ix, 0, hit.iz))
     if (hit.boosted) this.boostedUntil = now + WALL_DAMAGE_WINDOW
     if (hit.blast) this.blastUntil = now + WALL_DAMAGE_WINDOW
-    return this.health.damage(hit.damage)
+    this.kills.noteHit(attacker, now)
+    const result = this.hurt(hit.damage, now)
+    this.kills.noteXp(attacker, xpFor(result.dealt))
+    if (result.knockedOut) this.kills.noteXp(attacker, killXp)
+    return result
+  }
+
+  /** Dano (batida, parede, espinho); no nocaute, o abate vai para quem bateu por último. */
+  hurt(amount, now) {
+    const result = this.health.damage(amount)
+    if (result.knockedOut) this.kills.knockedOut(now)
+    return result
   }
 
   /** Física sem ninguém dirigindo; volta do nocaute no lugar dele, com vida cheia. */
@@ -60,6 +76,7 @@ export class TrainingDummy {
 
   revive() {
     this.health = new Health()
+    this.kills.lastHit = null
     this.car.reset()
   }
 
@@ -69,6 +86,8 @@ export class TrainingDummy {
       ...this.car.getNetState(), t,
       hp: this.health.hp, ko: this.health.isKO, shield: this.health.isShielded,
       livery: null, colors: DUMMY_COLORS, ult: null,
+      deaths: this.kills.deaths, koBy: { ...this.kills.koBy }, asBy: { ...this.kills.asBy },
+      xpBy: { ...this.kills.xpBy },
     }
   }
 }
@@ -95,6 +114,7 @@ export function localNet(onHit) {
     sendUlt: nothing,
     sendUltReq: nothing,
     sendMedkit: nothing,
+    sendMatch: nothing,
   }
 }
 
@@ -153,6 +173,7 @@ export class TestPanel {
       button('Add dummy', actions.addDummy),
       button('Revive dummies', actions.reviveDummies),
     )
+    section('Match', button('End match now', actions.endMatch))
     section('Me',
       button('Full heal', actions.heal),
       button('Take 30 damage', actions.hurt),

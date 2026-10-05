@@ -18,9 +18,10 @@ export class FixedStepLoop {
    *   stepSeconds?: number,
    *   maxCatchUp?: number,
    *   backgroundTickMs?: number,
+   *   getMaxFps?: () => number, // limite de quadros desenhados por segundo; 0 = sem limite
    * }} opts
    */
-  constructor({ step, render, stepSeconds = 1 / 60, maxCatchUp = 1, backgroundTickMs = 33 }) {
+  constructor({ step, render, stepSeconds = 1 / 60, maxCatchUp = 1, backgroundTickMs = 33, getMaxFps = () => 0 }) {
     this.stepFn = step
     this.renderFn = render
     this.stepSeconds = stepSeconds
@@ -30,10 +31,19 @@ export class FixedStepLoop {
     this.accumulator = 0
     this.lastWall = performance.now()
     this.lastFrame = this.lastWall
+    this.getMaxFps = getMaxFps
+    this.nextFrameAt = 0
   }
 
   start() {
     const frame = (nowMs) => {
+      const maxFps = this.getMaxFps()
+      if (maxFps > 0) {
+        // Tolerância de 1 ms para o rAF (que cai em múltiplos do monitor) não perder quadros
+        if (nowMs < this.nextFrameAt - 1) return void requestAnimationFrame(frame)
+        const interval = 1000 / maxFps
+        this.nextFrameAt = Math.max(this.nextFrameAt + interval, nowMs - interval)
+      }
       this.advance(nowMs)
       const dt = Math.min((nowMs - this.lastFrame) / 1000, 0.1)
       this.lastFrame = nowMs

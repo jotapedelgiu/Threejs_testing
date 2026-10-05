@@ -35,6 +35,7 @@ function listen(action, validate, handler) {
  *   onUlt: (state: { n: number, phase: string, kind: string | null, left: number, given: object | null }, peerId: string) => void,
  *   onUltReq: (req: { n: number, op: 'claim' }, peerId: string) => void,
  *   onMedkit: (state: { v: number, zones: { id: number, x: number, z: number, left: number }[] }, peerId: string) => void,
+ *   onMatch: (clock: { left: number, over: boolean }, peerId: string) => void,
  * }} handlers
  */
 export function joinArena(roomId, handlers) {
@@ -59,6 +60,8 @@ export function joinArena(roomId, handlers) {
   const ultReqAction = room.makeAction('ultreq')
   // Zona de cura: estado (do anfitrião)
   const medkitAction = room.makeAction('medkit')
+  // Relógio da partida (do anfitrião)
+  const matchAction = room.makeAction('match')
   const peers = new Set()
 
   room.onPeerJoin = (peerId) => {
@@ -82,6 +85,7 @@ export function joinArena(roomId, handlers) {
   listen(ultAction, validators.ult, handlers.onUlt)
   listen(ultReqAction, validators.ultreq, handlers.onUltReq)
   listen(medkitAction, validators.medkit, handlers.onMedkit)
+  listen(matchAction, validators.match, handlers.onMatch)
 
   // Sai da sala ao fechar a aba, para os outros removerem o carrinho na hora
   window.addEventListener('beforeunload', () => room.leave())
@@ -113,5 +117,7 @@ export function joinArena(roomId, handlers) {
     sendUltReq: broadcast(ultReqAction),
     /** Anfitrião: estado da zona de cura, para todos ou só para `peerId`. */
     sendMedkit: (state, peerId) => (peerId ? medkitAction.send(state, { target: peerId }) : broadcast(medkitAction)(state)),
+    /** Anfitrião: relógio da partida, para todos ou só para `peerId`. */
+    sendMatch: (clock, peerId) => (peerId ? matchAction.send(clock, { target: peerId }) : broadcast(matchAction)(clock)),
   }
 }

@@ -56,24 +56,26 @@ export const ULTIMATES = {
     hint: 'aim and fire: you are rooted while it casts',
     enemyHint: 'get out of the line!',
   },
-  // Míssil: 2 tiros (os boosts "viram mísseis" enquanto estiver com ele).
-  // Cada um sai da frente do carro e cruza o mapa em linha reta até a mureta
-  // (passa por cima de bastões e pneus). Quem estiver no caminho leva dano e
-  // é empurrado (ele continua voando). Atrás fica um rastro reto que deixa
-  // lento quem passar por ele (menos quem atirou). Quem atira não para
+  // Míssil: rajada de 5 mísseis, um a cada `shotInterval`, na direção para
+  // onde o carro está virado. Quem usa fica PARADO e só pode girar para mirar.
+  // Cada míssil cruza o mapa em linha reta, passando por cima de tudo
+  // (bastões, pneus, mureta); quem estiver no caminho leva dano e é empurrado
+  // (ele continua voando). Atrás fica um rastro reto que deixa lento quem
+  // passar por ele (menos quem atirou)
   missile: {
     name: 'MISSILE',
-    charges: 2,       // tiros por item
-    duration: 0.6,    // s entre um tiro e outro (o voo continua sozinho)
+    shots: 5,         // mísseis por uso (5 × 10 = 50 de dano se todos acertarem)
+    shotInterval: 0.7, // s entre um míssil e outro
+    duration: 3.2,    // s parado (o último sai em 4 × shotInterval; o voo continua sozinho)
     speed: 45,        // m/s
-    damage: 20,       // acerto direto (0 = só o rastro)
-    push: 14,         // m/s na direção do míssil
+    damage: 10,       // acerto direto, por míssil (0 = só o rastro)
+    push: 5,          // m/s na direção do míssil
     hitRadius: 1.4,   // m em volta do míssil
-    trailWidth: 2.4,  // m
+    trailWidth: 1.4,  // m
     trailLife: 6,     // s que o rastro fica depois que o míssil chega na mureta
     slow: 0.45,       // velocidade máxima de quem está no rastro (fração)
     slowLinger: 0.8,  // s que a lentidão dura depois de sair do rastro
-    hint: 'fire across the map: the trail slows',
+    hint: '5 missiles: rooted, steer to aim',
     enemyHint: 'missile incoming! stay off the trail',
   },
 }
@@ -161,8 +163,6 @@ export class UltimateSlot {
 
   reset() {
     this.kind = null    // guardado, esperando para usar
-    this.charges = 0    // usos que restam do guardado (o Míssil tem 2)
-    this.started = false // já usou a 1ª carga: as outras não esperam a recarga
     this.storedLeft = 0 // s até o guardado se perder
     this.active = null  // em uso agora
     this.activeLeft = 0 // s de poder que faltam
@@ -176,38 +176,29 @@ export class UltimateSlot {
 
   /** Dá para usar agora? */
   get ready() {
-    return !!this.kind && !this.active && (this.cooldown <= 0 || this.started)
+    return !!this.kind && !this.active && this.cooldown <= 0
   }
 
   give(kind) {
     if (this.kind) return false
     this.kind = kind
-    this.charges = ULTIMATES[kind].charges ?? 1
-    this.started = false
     this.storedLeft = ULT_STORE_TIME
     return true
   }
 
-  /**
-   * Usa uma carga do guardado. A recarga começa na primeira; as seguintes
-   * (Míssil) saem sem esperar. @returns o tipo ativado, ou null
-   */
+  /** Usa o guardado e começa a recarga. @returns o tipo ativado, ou null */
   activate() {
     if (!this.ready) return null
     const kind = this.kind
-    if (!this.started) this.cooldown = ULT_COOLDOWN
+    this.cooldown = ULT_COOLDOWN
     this.active = kind
     this.activeLeft = ULTIMATES[kind].duration
-    this.charges--
-    this.started = this.charges > 0
-    if (this.charges <= 0) this.clearStored()
+    this.clearStored()
     return kind
   }
 
   clearStored() {
     this.kind = null
-    this.charges = 0
-    this.started = false
     this.storedLeft = 0
   }
 

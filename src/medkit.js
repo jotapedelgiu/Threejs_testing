@@ -3,7 +3,7 @@ import { MAX_HEALTH } from './damage.js'
 // Zona de cura: círculo no chão que aparece perto da briga quando alguém está
 // com a vida baixa e dura alguns segundos. Quem estiver dentro recupera uma
 // % fixa da vida que falta, por segundo; ficando o tempo todo, recupera
-// MEDKIT.healOfMissing (90%) da vida perdida. Todos que estiverem dentro curam,
+// MEDKIT.healOfMissing (50%) da vida perdida. Todos que estiverem dentro curam,
 // então ninguém "rouba" a cura de ninguém. Sem dependências de navegador,
 // para poder ser testado no Node.
 //
@@ -20,7 +20,7 @@ export const MEDKIT = {
   gap: 25,            // s depois de uma zona acabar até poder aparecer outra NAQUELA região
   duration: 8,        // s que a zona fica no chão
   radius: 6,          // m
-  healOfMissing: 0.9, // ficando a zona inteira dentro, cura 90% da vida perdida
+  healOfMissing: 0.5, // ficando a zona inteira dentro, cura 50% da vida perdida
   nearWeakest: [3, 8], // m: o centro da zona fica a essa distância de quem tem menos vida
   separation: 25,     // m: briga "coberta" por uma zona (ativa ou recém-acabada)
   playersPerZone: 5,  // 1 zona até 5 jogadores, 2 de 6 a 10...
@@ -32,7 +32,7 @@ export const maxZonesFor = (players) => Math.min(MEDKIT.maxZones, Math.max(1, Ma
 
 // % da vida que falta curada por segundo. Curando sempre a mesma fração do
 // que falta, depois de `duration` segundos sobra e^(-taxa·t); para sobrar
-// 10%: taxa = -ln(1 - 0,9) / duração (≈ 0,29 por segundo em 8 s)
+// 50%: taxa = -ln(1 - 0,5) / duração (≈ 0,087 por segundo em 8 s)
 export const HEAL_RATE = -Math.log(1 - MEDKIT.healOfMissing) / MEDKIT.duration
 
 /**
@@ -42,12 +42,12 @@ export const HEAL_RATE = -Math.log(1 - MEDKIT.healOfMissing) / MEDKIT.duration
 export class ZoneHealing {
   carry = 0
 
-  /** @returns quanto curar agora (inteiro) */
-  update(dt, hp) {
-    this.carry += HEAL_RATE * (MAX_HEALTH - hp) * dt
+  /** @param max vida máxima de quem cura (sobe com o nível) @returns quanto curar agora (inteiro) */
+  update(dt, hp, max = MAX_HEALTH) {
+    this.carry += HEAL_RATE * (max - hp) * dt
     const whole = Math.floor(this.carry)
     this.carry -= whole
-    return Math.min(whole, MAX_HEALTH - hp)
+    return Math.min(whole, max - hp)
   }
 }
 

@@ -220,7 +220,9 @@ export class UltimateView {
       g.scale.setScalar(radius * (1 + 0.015 * Math.sin(t * 20)))
     })
     for (let i = storms.length; i < this.storms.length; i++) this.storms[i].visible = false
-    this.stormMaterial.opacity = 0.55 + 0.35 * Math.abs(Math.sin(t * 9))
+    const stormBlink = 0.5 + 0.5 * Math.sin(t * 30) // pisca rápido, como a faixa da onda de choque
+    this.stormMaterial.opacity = 0.5 + 0.4 * stormBlink
+    this.stormFillMaterial.opacity = 0.12 + 0.2 * stormBlink
 
     this.updateWaves(dt)
     this.updateMissiles(missiles)

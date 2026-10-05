@@ -11,11 +11,11 @@ import { testCarCircle } from './collision.js'
 // os jogadores da sala veem os bastões nos mesmos lugares. A animação é
 // avisada pela rede para os outros verem o mesmo ricochete.
 
-const SPRING = 55       // rigidez da mola que endireita o bastão
-const DAMPING = 4.5     // amortecimento (menor = balança mais vezes)
-const MAX_TILT = 0.6    // rad: inclinação máxima
-const SQUASH_SPRING = 140
-const SQUASH_DAMPING = 9
+export const SPRING = 55       // rigidez da mola que endireita o bastão
+export const DAMPING = 4.5     // amortecimento (menor = balança mais vezes)
+export const MAX_TILT = 0.6    // rad: inclinação máxima
+export const SQUASH_SPRING = 140
+export const SQUASH_DAMPING = 9
 
 export class SpikedBats {
   /**

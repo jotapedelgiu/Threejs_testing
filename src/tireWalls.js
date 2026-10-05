@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { seededRandom } from './random.js'
+import { SPRING, DAMPING, MAX_TILT, SQUASH_SPRING, SQUASH_DAMPING } from './bats.js'
 import { testCarCapsule, distanceToSegment } from './collision.js'
 
 // Paredes de pneus: obstáculos retos espalhados pela arena, alinhados aos
@@ -10,6 +11,8 @@ import { testCarCapsule, distanceToSegment } from './collision.js'
 // bastões; todos da sala calculam as mesmas paredes sem trocar mensagens.
 // Para colisão, cada parede é uma cápsula: o segmento ao longo do comprimento
 // com raio igual à metade da espessura.
+
+const INTENSITY = 0.3 // mesma animação dos bastões, só que mais fraca (parede pesada)
 
 /**
  * Sorteia as paredes do mapa.
@@ -98,16 +101,23 @@ export class TireWalls {
 
   /** Mapa novo: outras paredes (cria/remove meshes conforme a quantidade). */
   setWalls(walls) {
-    while (this.items.length > walls.length) this.scene.remove(this.items.pop().object)
+    while (this.items.length > walls.length) this.scene.remove(this.items.pop().pivot)
     while (this.items.length < walls.length) {
+      // pivot no pé da parede: a inclinação gira em torno da base (como nos bastões)
+      const pivot = new THREE.Group()
       const object = this.model.clone(true)
-      this.scene.add(object)
-      this.items.push({ object, a: new THREE.Vector2(), b: new THREE.Vector2() })
+      pivot.add(object)
+      this.scene.add(pivot)
+      this.items.push({
+        pivot, object, a: new THREE.Vector2(), b: new THREE.Vector2(),
+        tiltX: 0, tiltZ: 0, tiltVelX: 0, tiltVelZ: 0, squash: 0, squashVel: 0, lastKick: -Infinity,
+      })
     }
     walls.forEach((w, i) => {
       const item = this.items[i]
-      item.object.position.set(w.x, 0, w.z)
+      item.pivot.position.set(w.x, 0, w.z)
       item.object.rotation.y = w.yaw
+      item.tiltX = item.tiltZ = item.tiltVelX = item.tiltVelZ = item.squash = item.squashVel = 0
       const dx = Math.cos(w.yaw) * this.segmentHalf, dz = -Math.sin(w.yaw) * this.segmentHalf
       item.a.set(w.x - dx, w.z - dz)
       item.b.set(w.x + dx, w.z + dz)
@@ -121,11 +131,45 @@ export class TireWalls {
    */
   testCar(position, yaw, fp) {
     this.hits.length = 0
-    for (const { a, b } of this.items) {
+    this.items.forEach(({ a, b }, index) => {
       const hit = testCarCapsule(position, yaw, fp, a, b, this.radius)
-      if (hit) this.hits.push(hit)
-    }
+      if (hit) this.hits.push({ index, ...hit })
+    })
     return this.hits
+  }
+
+  /**
+   * Batida na parede: mesma física dos bastões (inclina para o lado oposto da
+   * batida, volta oscilando, amassa), só que com intensidade reduzida.
+   * @param {number} dirX direção do empurrão na parede (do carro para a parede)
+   * @param {number} dirZ
+   * @param {number} strength velocidade da batida (m/s)
+   */
+  kick(index, dirX, dirZ, strength) {
+    const it = this.items[index]
+    const now = performance.now()
+    if (!it || strength < 1 || now - it.lastKick < 150) return
+    it.lastKick = now
+    const k = Math.min(strength, 25) * 0.35 * INTENSITY
+    it.tiltVelX += dirZ * k
+    it.tiltVelZ -= dirX * k
+    it.squashVel -= Math.min(strength, 25) * 0.25 * INTENSITY
+  }
+
+  /** Animação (molas): chamar a cada quadro. */
+  update(dt) {
+    for (const it of this.items) {
+      it.tiltVelX += (-SPRING * it.tiltX - DAMPING * it.tiltVelX) * dt
+      it.tiltVelZ += (-SPRING * it.tiltZ - DAMPING * it.tiltVelZ) * dt
+      it.tiltX = THREE.MathUtils.clamp(it.tiltX + it.tiltVelX * dt, -MAX_TILT, MAX_TILT)
+      it.tiltZ = THREE.MathUtils.clamp(it.tiltZ + it.tiltVelZ * dt, -MAX_TILT, MAX_TILT)
+      it.squashVel += (-SQUASH_SPRING * it.squash - SQUASH_DAMPING * it.squashVel) * dt
+      it.squash += it.squashVel * dt
+      it.pivot.rotation.x = it.tiltX
+      it.pivot.rotation.z = it.tiltZ
+      const s = THREE.MathUtils.clamp(1 + it.squash, 0.75, 1.25)
+      it.object.scale.set(1 / Math.sqrt(s), s, 1 / Math.sqrt(s))
+    }
   }
 
   /** Distância de um ponto do chão até a parede mais próxima (borda). */

@@ -14,6 +14,12 @@ estilo quadrinhos (three.js). Jogue em
 
 Quem chega com a partida rolando entra direto nela.
 
+**Vitória:** a partida dura **10 minutos**; ganha quem tiver mais abates
+(K.O. em outros jogadores). O abate vai para quem causou dano por último na
+vítima (até 8 s antes), inclusive arremessando contra parede ou espinhos.
+Empate em abates: vitória dividida; ninguém com abate: empate. No fim, o
+anfitrião pode começar outra partida (**Play again**).
+
 **Campo de testes** (botão *Practice range* no menu): partida só sua, sem rede, com bonecos
 parados que têm vida (levam dano, são nocauteados e voltam) e um painel para
 pegar qualquer ultimate, zerar a recarga, chamar o item do centro e a zona
@@ -69,8 +75,10 @@ ajusta física, câmera, cores e efeitos. No
 | `orbs.js` | esferas de boost com posições determinísticas por sala |
 | `bats.js` | bastões com espinhos: posição, colisão e animação de ricochete |
 | `ultimate.js` / `ultimateView.js` | ultimate a cada minuto no centro (anfitrião decide) e o visual dele |
-| `medkit.js` / `medkitView.js` | zona de cura: aparece perto da briga quando alguém está com a vida baixa; quem fica dentro cura até 90% da vida perdida |
+| `progression.js` | níveis: o XP acumulado (dano causado, com bônus por diferença de nível e por abate) sobe o nível (120 para o 2, +138 para o 3, +156...; máx. 10); cada nível dá +5% de dano e +5 de vida máxima |
+| `medkit.js` / `medkitView.js` | zona de cura: aparece perto da briga quando alguém está com a vida baixa; quem fica dentro cura até 50% da vida perdida |
 | `testRange.js` | campo de testes: bonecos com vida, rede de mentira e painel |
+| `match.js` | regra de vitória: relógio de 10 min, crédito dos abates e classificação |
 | `spawns.js` | nascimento: um canto por jogador no início; renascer no ponto mais vazio (estilo Quake 3/Halo) |
 | `tireWalls.js` | paredes de pneus: sorteio pelo mapa, girando em 90°, e colisão |
 | `layout.js` | mapa de cada partida: semente nova, e a sala adota o mapa mais antigo |

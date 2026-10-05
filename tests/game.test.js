@@ -20,7 +20,9 @@ import { TireWalls, placeTireWalls, prepareTireWall } from '../src/tireWalls.js'
 import { distanceToSegment } from '../src/collision.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from '../src/spawns.js'
 import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME } from '../src/ultimate.js'
+import { levelFor, damageToLevelUp, damageScale, scaleDamage, maxHealthFor, MAX_LEVEL, xpForHit, xpForKill, repeatScale, XP_EXTRA } from '../src/progression.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
+import { KillTracker, KILL_CREDIT, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock, newKills, MATCH_TIME } from '../src/match.js'
 
 const DT = 1 / 60
 // Carro com o tamanho da base do bate-bate (~1,3 x 2,7 m)
@@ -130,10 +132,10 @@ describe('Dano e vida', () => {
     assert.equal(impactDamage(damageParams.smash), DAMAGE.smash)
   })
 
-  test('balanceamento: proporção 1:2:3, TURBO vale 2 PANCADAS', () => {
+  test('balanceamento: proporção 1:2:3, TURBO vale mais que uma PANCADA', () => {
     assert.equal(DAMAGE.strong, DAMAGE.light * 2)
     assert.equal(DAMAGE.smash, DAMAGE.light * 3)
-    assert.equal(DAMAGE.turbo, DAMAGE.smash * 2)
+    assert.ok(DAMAGE.turbo > DAMAGE.smash * 1.5)
   })
 
   test('faixa do dano recebido pela rede (texto na tela)', () => {
@@ -862,12 +864,12 @@ describe('Zona de cura', () => {
     assert.deepEqual([1, 4, 5, 6, 10, 20].map(maxZonesFor), [1, 1, 1, 2, 2, 2])
   })
 
-  test('dentro do círculo a zona inteira: cura 90% da vida perdida', () => {
-    assert.ok(Math.abs(stayInside(20, MEDKIT.duration) - (20 + 0.9 * 80)) <= 1, `de 20 foi para ${stayInside(20, MEDKIT.duration)}`)
-    assert.ok(Math.abs(stayInside(60, MEDKIT.duration) - (60 + 0.9 * 40)) <= 1)
+  test('dentro do círculo a zona inteira: cura 50% da vida perdida', () => {
+    assert.ok(Math.abs(stayInside(20, MEDKIT.duration) - (20 + MEDKIT.healOfMissing * 80)) <= 1, `de 20 foi para ${stayInside(20, MEDKIT.duration)}`)
+    assert.ok(Math.abs(stayInside(60, MEDKIT.duration) - (60 + MEDKIT.healOfMissing * 40)) <= 1)
     assert.ok(stayInside(20, MEDKIT.duration / 2) < stayInside(20, MEDKIT.duration), 'metade do tempo, menos cura')
     assert.equal(stayInside(100, MEDKIT.duration), 100, 'vida cheia não passa de 100')
-    assert.ok(HEAL_RATE > 0.25 && HEAL_RATE < 0.33, '~29% do que falta por segundo')
+    assert.ok(HEAL_RATE > 0.08 && HEAL_RATE < 0.095, '~8,7% do que falta por segundo')
   })
 
   test('aparece perto da briga: a poucos metros de quem tem menos vida', () => {
@@ -945,34 +947,211 @@ describe('Míssil', () => {
     assert.ok(c.speed > c.params.maxSpeed * 0.9, 'sem lentidão volta ao normal')
   })
 
-  test('2 mísseis por item: o 2º não espera a recarga; depois a vaga libera', () => {
+  test('rajada de 5 mísseis de 10 de dano (50 no total), com o carro parado durante ela', () => {
+    assert.equal(spec.shots, 5)
+    assert.equal(spec.shots * spec.damage, 50)
+    assert.ok((spec.shots - 1) * spec.shotInterval < spec.duration, 'o último sai antes do poder acabar')
     const slot = new UltimateSlot()
     slot.give('missile')
-    assert.equal(slot.charges, 2)
-    assert.equal(slot.activate(), 'missile')
-    assert.equal(slot.kind, 'missile', 'ainda tem 1 guardado')
-    assert.ok(!slot.canPickUp, 'não pega outro item enquanto tiver míssil')
-    assert.equal(slot.cooldown, ULT_COOLDOWN, 'a recarga começa no 1º tiro')
-    assert.ok(!slot.ready, 'intervalo entre tiros')
-    for (let t = 0; t < spec.duration + 0.05; t += 0.05) slot.update(0.05)
-    assert.ok(slot.ready && slot.cooldown > 50, '2º tiro liberado mesmo com a recarga correndo')
     assert.equal(slot.activate(), 'missile')
     assert.equal(slot.kind, null)
     assert.ok(slot.canPickUp)
-    assert.equal(slot.activate(), null, 'acabaram')
+    assert.equal(slot.cooldown, ULT_COOLDOWN)
+    assert.equal(slot.active, 'missile')
+    assert.equal(slot.activeLeft, spec.duration)
+    assert.equal(slot.activate(), null, 'acabou')
   })
 
-  test('o míssil que sobrou também vence no prazo', () => {
+  test('o míssil guardado vence no prazo', () => {
     const slot = new UltimateSlot()
     slot.give('missile')
-    slot.activate()
     let event = null
     for (let t = 0; t < ULT_STORE_TIME + 1; t += 0.1) event = slot.update(0.1) ?? event
     assert.equal(event, 'expired')
-    assert.equal(slot.charges, 0)
   })
 
   test('mensagem de batida do míssil', () => {
-    assert.equal(validators.hit({ target: 'x', ix: 14, iz: 0, damage: 20, rocket: true }).rocket, true)
+    assert.equal(validators.hit({ target: 'x', ix: 14, iz: 0, damage: 10, rocket: true }).rocket, true)
+  })
+})
+
+describe('Partida (abates)', () => {
+  test('10 minutos', () => {
+    assert.equal(MATCH_TIME, 600)
+    assert.equal(formatClock(300), '5:00')
+    assert.equal(formatClock(59.2), '1:00')
+    assert.equal(formatClock(9), '0:09')
+    assert.equal(formatClock(-3), '0:00')
+  })
+
+  test('o abate vai para quem bateu por último (até 8 s antes)', () => {
+    const k = new KillTracker()
+    k.noteHit('ana', 10)
+    k.noteHit('beto', 12)
+    assert.equal(k.knockedOut(13), 'beto', 'o último que bateu')
+    k.noteHit('ana', 20)
+    assert.equal(k.knockedOut(20 + KILL_CREDIT + 1), null, 'faz tempo: ninguém leva')
+    assert.equal(k.knockedOut(40), null, 'sem batida nenhuma: só morte')
+    assert.deepEqual(k.koBy, { beto: 1 })
+    assert.equal(k.deaths, 3)
+  })
+
+  test('assistência: quem bateu na janela mas não deu o abate', () => {
+    const k = new KillTracker()
+    k.noteHit('ana', 10)
+    k.noteHit('caio', 11)
+    k.noteHit('beto', 12)
+    k.knockedOut(13)
+    assert.deepEqual(k.koBy, { beto: 1 })
+    assert.deepEqual(k.asBy, { ana: 1, caio: 1 })
+    k.noteHit('ana', 20)
+    k.noteHit('beto', 40)
+    k.knockedOut(41)
+    assert.deepEqual(k.asBy, { ana: 1, caio: 1 }, 'batida antiga não conta')
+    assert.equal(tallyAssists([{ asBy: { ana: 1 } }, { asBy: { ana: 2 } }, {}]).get('ana'), 3)
+  })
+
+  test('empate em abates: mais assistências vence', () => {
+    const ranked = standings([
+      { id: 'a', name: 'Ana', kills: 2, assists: 1, deaths: 0 },
+      { id: 'b', name: 'Beto', kills: 2, assists: 3, deaths: 5 },
+    ])
+    assert.deepEqual(ranked.map((p) => p.id), ['b', 'a'])
+    assert.deepEqual(winners(ranked).map((p) => p.id), ['b'])
+  })
+
+  test('placar: soma o "quem me nocauteou" de todo mundo', () => {
+    const tally = tallyKills([{ koBy: { ana: 2 } }, { koBy: { ana: 1, beto: 3 } }, { koBy: {} }, {}])
+    assert.equal(tally.get('ana'), 3)
+    assert.equal(tally.get('beto'), 3)
+  })
+
+  test('classificação: mais abates; empate decide por menos mortes; vitória dividida', () => {
+    const ranked = standings([
+      { id: 'a', name: 'Ana', kills: 3, deaths: 2 },
+      { id: 'b', name: 'Beto', kills: 5, deaths: 4 },
+      { id: 'c', name: 'Caio', kills: 3, deaths: 1 },
+    ])
+    assert.deepEqual(ranked.map((p) => p.id), ['b', 'c', 'a'])
+    assert.deepEqual(winners(ranked).map((p) => p.id), ['b'])
+    const tie = standings([{ id: 'a', name: 'Ana', kills: 2, deaths: 0 }, { id: 'b', name: 'Beto', kills: 2, deaths: 3 }])
+    assert.deepEqual(winners(tie).map((p) => p.id), ['a', 'b'], 'mesmos abates: os dois vencem')
+    assert.deepEqual(winners(standings([{ id: 'a', name: 'Ana', kills: 0, deaths: 0 }])), [], 'ninguém abateu: empate')
+  })
+
+  test('kill feed: só os abates novos desde o último estado', () => {
+    assert.deepEqual(newKills({ ana: 1 }, { ana: 2, beto: 1 }), ['ana', 'beto'])
+    assert.deepEqual(newKills({ ana: 2 }, { ana: 2 }), [])
+    assert.deepEqual(newKills(undefined, { ana: 1 }), ['ana'])
+  })
+
+  test('mensagens: placar no estado e relógio validados', () => {
+    const base = { t: 1, x: 0, z: 0, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0 }
+    assert.deepEqual(validators.state({ ...base, deaths: 2, koBy: { ana: 2, beto: 0 } }).koBy, { ana: 2 })
+    assert.deepEqual(validators.state({ ...base, koBy: 'hack' }).koBy, {})
+    assert.deepEqual(validators.state({ ...base, koBy: { ana: -5 } }).koBy, {})
+    assert.deepEqual(validators.match({ left: 120, over: false }), { left: 120, over: false })
+    assert.equal(validators.match({ left: 'agora' }), null)
+  })
+})
+
+describe('Progressão (níveis)', () => {
+  test('o nível sobe com o XP acumulado: 120, depois 138, 156..., até 10', () => {
+    assert.deepEqual([0, 119, 120, 257, 258, 413, 414, 1727, 1728, 9000].map(levelFor), [1, 1, 2, 2, 3, 3, 4, 9, 10, 10])
+    assert.equal(MAX_LEVEL, 10)
+    assert.equal(levelFor(undefined), 1)
+    assert.equal(damageToLevelUp(1), 120)
+    assert.equal(damageToLevelUp(2), 138)
+  })
+
+  test('o XP soma o xpBy de todas as vítimas', () => {
+    const k = new KillTracker()
+    k.noteXp('ana', 30)
+    k.noteXp('ana', 20)
+    k.noteXp(null, 40)
+    k.noteXp('beto', 0)
+    assert.deepEqual(k.xpBy, { ana: 50 })
+    assert.equal(tallyXp([k, { xpBy: { ana: 70 } }, {}]).get('ana'), 120)
+  })
+
+  test('XP extra: bater em quem está acima rende mais, abaixo rende menos', () => {
+    assert.equal(xpForHit(20, 5, 5), 20, 'mesmo nível: só o dano')
+    assert.equal(xpForHit(20, 5, 7), 30, '+2 níveis: x1,5')
+    assert.equal(xpForHit(20, 5, 3), 10, '-2 níveis: x0,5 (mínimo)')
+    assert.equal(xpForHit(20, 1, 10), 50, 'teto de x2,5')
+    assert.equal(xpForHit(0, 1, 10), 0)
+    assert.equal(xpForKill(5, 5), XP_EXTRA.kill)
+    assert.equal(xpForKill(5, 7), 45)
+    assert.equal(xpForKill(10, 1), 15, 'piso do bônus de abate')
+  })
+
+  test('cair de novo para o mesmo atacante só trava dentro da janela (e se repeatFraction < 1)', () => {
+    assert.equal(repeatScale(null), 1)
+    assert.equal(repeatScale(XP_EXTRA.repeatWindow + 1), 1)
+    assert.equal(repeatScale(5), XP_EXTRA.repeatFraction)
+  })
+
+  test('o tracker lembra quando cada atacante o abateu', () => {
+    const k = new KillTracker()
+    assert.equal(k.sinceKoBy('ana', 100), null)
+    k.noteHit('ana', 100)
+    k.knockedOut(101)
+    assert.equal(k.sinceKoBy('ana', 110), 9)
+    assert.equal(k.sinceKoBy('beto', 110), null)
+  })
+
+  test('cada nível dá mais dano e mais vida', () => {
+    assert.equal(damageScale(1), 1)
+    assert.equal(maxHealthFor(1), MAX_HEALTH)
+    for (let l = 2; l <= MAX_LEVEL; l++) {
+      assert.ok(damageScale(l) > damageScale(l - 1))
+      assert.ok(maxHealthFor(l) > maxHealthFor(l - 1))
+    }
+    assert.equal(scaleDamage(DAMAGE.smash, 1), DAMAGE.smash, 'nível 1 não muda o dano')
+    assert.ok(scaleDamage(DAMAGE.light, 20) > DAMAGE.light)
+    assert.equal(scaleDamage(0, 20), 0, 'sem dano continua sem dano')
+    assert.ok(Number.isInteger(scaleDamage(DAMAGE.strong, 3)), 'dano vai inteiro pela rede')
+  })
+
+  test('o dano escalado ainda é validado pela rede e vira a faixa certa no texto', () => {
+    const top = scaleDamage(DAMAGE.turbo, MAX_LEVEL)
+    assert.ok(validators.hit({ target: 'a', ix: 0, iz: 0, damage: top }), 'cabe no limite do protocolo')
+    for (const level of [1, 4, 20]) {
+      const scale = damageScale(level)
+      assert.equal(tierOfDamage(scaleDamage(DAMAGE.light, level), scale), 'light')
+      assert.equal(tierOfDamage(scaleDamage(DAMAGE.strong, level), scale), 'strong')
+      assert.equal(tierOfDamage(scaleDamage(DAMAGE.smash, level), scale), 'smash')
+    }
+  })
+
+  test('subir de nível aumenta a vida máxima e dá a diferença de vida', () => {
+    const h = new Health()
+    h.damage(40) // 60 / 100
+    h.setMax(maxHealthFor(2))
+    assert.equal(h.max, maxHealthFor(2))
+    assert.equal(h.hp, 60 + (maxHealthFor(2) - MAX_HEALTH))
+    const missing = h.max - h.hp
+    assert.equal(h.heal(1000), missing, 'cura vai até a nova máxima')
+    assert.equal(h.hp, h.max)
+  })
+
+  test('nocaute volta com a vida cheia do nível; reset volta ao nível 1', () => {
+    const h = new Health()
+    h.setMax(maxHealthFor(4))
+    h.damage(1000)
+    assert.ok(h.isKO)
+    h.update(KO_TIME + 0.1)
+    assert.equal(h.hp, maxHealthFor(4))
+    h.reset()
+    assert.equal(h.max, MAX_HEALTH)
+    assert.equal(h.hp, MAX_HEALTH)
+  })
+
+  test('a zona de cura respeita a vida máxima maior', () => {
+    const z = new ZoneHealing()
+    let hp = 100
+    const max = maxHealthFor(3)
+    for (let t = 0; t < 8; t += 1 / 60) hp += z.update(1 / 60, hp, max)
+    assert.ok(hp > 100 && hp <= max)
   })
 })

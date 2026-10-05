@@ -9,7 +9,7 @@ window.addEventListener('keydown', (e) => {
   if (e.target instanceof HTMLInputElement) return
   pressed.add(e.code)
   if (!e.repeat) justPressed.add(e.code)
-  if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault()
+  if (e.code.startsWith('Arrow') || e.code === 'Space' || e.code === 'Tab') e.preventDefault()
 })
 window.addEventListener('keyup', (e) => pressed.delete(e.code))
 // Solta tudo ao trocar de aba, senão a tecla fica "presa"

@@ -1,5 +1,6 @@
 import * as THREE from 'three'
 import { MAX_HEALTH } from './damage.js'
+import { standings } from './match.js'
 
 // Interface sobre o jogo (HTML): quadro de vidas, textos de dano flutuando e o
 // HUD do jogador (vida + boosts). Fica separada das regras (damage.js) para
@@ -18,6 +19,7 @@ const POPUPS = {
   wall: { text: (n) => `-${n} WALL SLAM!`, cls: 'wall' },
   spike: { text: (n) => `-${n} SPIKED!`, cls: 'spike' },
   ko: { text: () => 'K.O.!', cls: 'ko' },
+  levelup: { text: (n) => `LEVEL ${n}!`, cls: 'levelup' },
   pickup: { text: () => '+1 BOOST', cls: 'pickup' },
   zap: { text: (n) => (n ? `-${n} ZAP!` : 'ZAP!'), cls: 'zap' },
   stun: { text: () => 'STUNNED!', cls: 'stun' },
@@ -38,10 +40,10 @@ const el = (tag, className, text) => {
 // Barra de vida: verde → amarelo → vermelho
 const healthColor = (ratio) => (ratio > 0.5 ? '#4cd964' : ratio > 0.25 ? '#ffd23f' : '#ff3d3d')
 
-function healthBar(hp) {
+function healthBar(hp, max) {
   const bar = el('span', 'hp-bar')
   const fill = el('span', 'hp-fill')
-  const ratio = Math.max(0, hp) / MAX_HEALTH
+  const ratio = Math.max(0, hp) / max
   fill.style.width = `${ratio * 100}%`
   fill.style.background = healthColor(ratio)
   bar.append(fill)
@@ -51,7 +53,7 @@ function healthBar(hp) {
 export class ScoreUI {
   constructor() {
     this.board = el('div', 'scoreboard')
-    this.board.append(el('h2', '', 'Health'))
+    this.board.append(el('h2', '', 'Scoreboard · K / D / A'))
     this.list = el('ol')
     this.board.append(this.list)
     document.body.append(this.board)
@@ -60,19 +62,28 @@ export class ScoreUI {
     this.lastKey = ''
   }
 
-  /** @param {{ name: string, color: string, hp: number, ko: boolean, isMe: boolean }[]} players */
+  setVisible(open) {
+    this.board.classList.toggle('open', open)
+  }
+
+  /** @param {{ name: string, color: string, hp: number, maxHp: number, level: number, ko: boolean, isMe: boolean, kills: number, assists: number, deaths: number }[]} players */
   render(players) {
-    // Mais vida em cima; nocauteados por último
-    const sorted = [...players].sort((a, b) => (a.ko - b.ko) || (b.hp - a.hp))
+    // Mais abates em cima; empate: mais assistências, depois menos mortes
+    const sorted = standings(players)
     // Só refaz o DOM quando algo mudou (dirty check)
     const key = JSON.stringify(sorted)
     if (key === this.lastKey) return
     this.lastKey = key
-    this.list.replaceChildren(...sorted.map((p) => {
+    const head = el('li', 'head')
+    head.append(el('span'), el('span', '', 'Player'), el('span', '', 'Lv'), el('span', '', 'HP'),
+      el('span', '', 'K'), el('span', '', 'D'), el('span', '', 'A'), el('span', '', 'KDA'))
+    this.list.replaceChildren(head, ...sorted.map((p) => {
       const li = el('li', `${p.isMe ? 'me' : ''} ${p.ko ? 'ko' : ''}`)
       const dot = el('span', 'dot')
       dot.style.background = p.color // montado localmente a partir de cores validadas
-      li.append(dot, el('span', 'name', p.name), healthBar(p.hp), el('span', 'points', p.ko ? 'KO' : String(p.hp)))
+      const kda = ((p.kills + p.assists) / Math.max(1, p.deaths)).toFixed(1)
+      li.append(dot, el('span', 'name', p.name), el('span', 'level', `${p.level}`), healthBar(p.hp, p.maxHp),
+        el('span', 'points', String(p.kills)), el('span', 'points', String(p.deaths)), el('span', 'points', String(p.assists)), el('span', 'points', kda))
       return li
     }))
   }
@@ -124,21 +135,31 @@ class HealthBar {
     this.root = el('div', 'health-hud')
     const head = el('div', 'hp-head')
     this.number = el('span', 'hp-num', String(MAX_HEALTH))
-    head.append(el('span', 'hp-label', 'HP'), this.number, el('span', 'hp-max', `/ ${MAX_HEALTH}`))
+    this.maxLabel = el('span', 'hp-max', `/ ${MAX_HEALTH}`)
+    this.level = el('span', 'hp-level', 'LV 1')
+    head.append(el('span', 'hp-label', 'HP'), this.number, this.maxLabel, this.level)
+    this.xp = el('div', 'hp-xp')
+    this.xpFill = el('span', 'hp-xp-fill')
+    this.xp.append(this.xpFill)
     this.frame = el('div', 'hp-frame')
     this.lag = el('span', 'hp-lag')
     this.fill = el('span', 'hp-fill')
     this.frame.append(this.lag, this.fill, el('span', 'hp-ticks'))
     this.status = el('div', 'hp-status')
-    this.root.append(head, this.frame, this.status)
+    this.root.append(head, this.xp, this.frame, this.status)
     parent.append(this.root)
     this.hp = MAX_HEALTH
+    this.max = MAX_HEALTH
     this.fill.style.background = healthColor(1)
   }
 
-  set(hp) {
-    if (hp === this.hp) return
-    const ratio = Math.max(0, hp) / MAX_HEALTH
+  set(hp, max = this.max) {
+    if (hp === this.hp && max === this.max) return
+    if (max !== this.max) {
+      this.max = max
+      this.maxLabel.textContent = `/ ${max}`
+    }
+    const ratio = Math.max(0, hp) / max
     const width = `${ratio * 100}%`
     if (hp < this.hp) {
       // Dano: a barra cai já; o rastro espera e escorre (transição do CSS)
@@ -199,12 +220,24 @@ export class PlayerHud {
    *   ult.stored/active = nome do ultimate guardado / em uso; storedLeft = s até perder o guardado;
    *   missiles = com o Míssil na mão, quantos restam (as bolinhas de boost viram mísseis)
    */
-  render({ hp, ko, shielded, koTimer, boosts, boosting, boostLocked, missiles = null, ult }) {
+  render({ hp, maxHp, level, levelProgress = 0, ko, shielded, koTimer, boosts, boosting, boostLocked, missiles = null, ult }) {
     const ultKey = `${ult.stored}:${ult.ready}:${ult.charges}:${Math.ceil(ult.storedLeft)}:${ult.active}:${Math.ceil(ult.activeLeft)}:${Math.ceil(ult.cooldown)}`
-    const key = `${hp}:${ko}:${shielded}:${Math.ceil(koTimer)}:${boosts}:${boosting}:${boostLocked}:${missiles}:${ultKey}`
+    const key = `${hp}:${maxHp}:${level}:${Math.round(levelProgress * 200)}:${ko}:${shielded}:${Math.ceil(koTimer)}:${boosts}:${boosting}:${boostLocked}:${missiles}:${ultKey}`
     if (key === this.lastKey) return
     this.lastKey = key
-    this.health.set(hp)
+    this.health.set(hp, maxHp)
+    this.health.xpFill.style.width = `${levelProgress * 100}%`
+    if (level !== this.health.levelShown) {
+      // Subiu: o selo pulsa (a animação recomeça)
+      const up = this.health.levelShown !== undefined && level > this.health.levelShown
+      this.health.levelShown = level
+      this.health.level.textContent = `LV ${level}`
+      this.health.level.classList.remove('up')
+      if (up) {
+        void this.health.level.offsetWidth
+        this.health.level.classList.add('up')
+      }
+    }
     this.health.status.textContent = ko ? `KNOCKED OUT · respawn in ${Math.ceil(koTimer)}` : ''
     this.health.root.classList.toggle('ko', ko)
     this.health.root.classList.toggle('shielded', shielded)
@@ -249,7 +282,6 @@ export class PlayerHud {
   }
 }
 
-const NAME_HEIGHT = 3.2 // m acima do chão: por cima da haste
 const BAR_AHEAD = 1.9   // m do centro do carro na direção da câmera: fica logo abaixo dele na tela
 
 /**
@@ -268,17 +300,19 @@ export class CarTags {
   }
 
   create(id) {
-    const tag = { name: el('div', 'car-tag-name'), bar: el('div', 'car-tag-bar'), fill: el('span', 'fill'), lag: el('span', 'lag'), hp: MAX_HEALTH, text: '' }
+    const tag = { name: el('div', 'car-tag-name'), bar: el('div', 'car-tag-bar'), frame: el('div', 'car-tag-frame'), num: el('span', 'car-tag-num', String(MAX_HEALTH)), fill: el('span', 'fill'), lag: el('span', 'lag'), hp: MAX_HEALTH, max: MAX_HEALTH, text: '' }
     tag.fill.style.background = healthColor(1)
-    tag.bar.append(tag.lag, tag.fill)
-    this.layer.append(tag.name, tag.bar)
+    tag.frame.append(tag.lag, tag.fill, el('span', 'ticks'))
+    tag.bar.append(tag.name, tag.frame, tag.num)
+    this.layer.append(tag.bar)
     this.tags.set(id, tag)
     return tag
   }
 
-  setHp(tag, hp) {
-    if (hp === tag.hp) return
-    const ratio = Math.max(0, hp) / MAX_HEALTH
+  setHp(tag, hp, max) {
+    if (hp === tag.hp && max === tag.max) return
+    tag.max = max
+    const ratio = Math.max(0, hp) / max
     const width = `${ratio * 100}%`
     if (hp > tag.hp) {
       // Cura: o rastro vai junto, sem esperar
@@ -291,6 +325,8 @@ export class CarTags {
     }
     tag.fill.style.width = width
     tag.fill.style.background = healthColor(ratio)
+    tag.num.textContent = String(Math.max(0, hp))
+    tag.num.classList.toggle('low', ratio <= 0.25)
     tag.hp = hp
   }
 
@@ -303,7 +339,7 @@ export class CarTags {
 
   /**
    * @param {THREE.Camera} camera
-   * @param {Iterable<{ id: string, name: string, hp: number, position: THREE.Vector3, visible: boolean, powered: boolean }>} subjects
+   * @param {Iterable<{ id: string, name: string, hp: number, maxHp: number, position: THREE.Vector3, visible: boolean, powered: boolean }>} subjects
    *   powered = está com o ultimate (nome destacado)
    *   name vazio = só a barra (meu carro)
    */
@@ -314,30 +350,104 @@ export class CarTags {
     for (const s of subjects) {
       this.seen.add(s.id)
       const tag = this.tags.get(s.id) ?? this.create(s.id)
-      const nameAt = s.visible && s.name ? this.toScreen(this.tmp.copy(s.position).setY(NAME_HEIGHT), camera) : null
       const barAt = s.visible ? this.toScreen(this.tmp.copy(s.position).setY(0).add(this.ahead), camera) : null
-      tag.name.hidden = !nameAt
+      tag.name.hidden = !s.name
       tag.bar.hidden = !barAt
       if (s.powered !== tag.powered) {
         tag.powered = s.powered
         tag.name.classList.toggle('powered', s.powered)
       }
-      if (nameAt) {
-        if (s.name !== tag.text) tag.name.textContent = tag.text = s.name
-        tag.name.style.transform = `translate(${nameAt[0]}px, ${nameAt[1]}px) translate(-50%, -100%)`
-      }
       if (barAt) {
-        this.setHp(tag, s.hp)
+        if (s.name !== tag.text) tag.name.textContent = tag.text = s.name
+        this.setHp(tag, s.hp, s.maxHp)
         tag.bar.style.transform = `translate(${barAt[0]}px, ${barAt[1]}px) translate(-50%, 0)`
       }
     }
     // Quem saiu da sala perde a etiqueta
     for (const [id, tag] of this.tags) {
       if (this.seen.has(id)) continue
-      tag.name.remove()
       tag.bar.remove()
       this.tags.delete(id)
     }
+  }
+}
+
+const ARROW_MARGIN = 46   // px entre a seta e a borda da tela
+const ARROW_RANGE = 60    // m: além disso o item não ganha seta
+const ARROW_KINDS = {
+  boost: '#3fb6ff',
+  ultimate: '#ffd23f',
+}
+
+/**
+ * Setas na borda da tela apontando para itens que estão fora da vista:
+ * azul para boost, amarela para ultimate. Itens que já aparecem na tela não
+ * ganham seta; as mais distantes ficam mais apagadas.
+ */
+export class ItemArrows {
+  constructor() {
+    this.layer = el('div', 'item-arrows')
+    document.body.append(this.layer)
+    this.pool = []
+    this.tmp = new THREE.Vector3()
+  }
+
+  arrow(i) {
+    if (!this.pool[i]) {
+      const arrow = el('div', 'item-arrow')
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
+      svg.setAttribute('viewBox', '-12 -12 24 24')
+      svg.classList.add('tip')
+      const shape = document.createElementNS('http://www.w3.org/2000/svg', 'polygon')
+      shape.setAttribute('points', '-7,-8 9,0 -7,8 -3,0')
+      svg.append(shape)
+      arrow.append(svg)
+      this.layer.append(arrow)
+      this.pool[i] = { root: arrow, kind: '' }
+    }
+    return this.pool[i]
+  }
+
+  /**
+   * @param {THREE.Camera} camera
+   * @param {THREE.Vector3} from  de onde medir a distância (meu carro)
+   * @param {Iterable<{ kind: keyof typeof ARROW_KINDS, position: THREE.Vector3 }>} items
+   */
+  update(camera, from, items) {
+    const w = window.innerWidth
+    const h = window.innerHeight
+    const cx = w / 2
+    const cy = h / 2
+    let used = 0
+    for (const item of items) {
+      const dist = Math.hypot(item.position.x - from.x, item.position.z - from.z)
+      if (dist > ARROW_RANGE) continue
+      const p = this.tmp.copy(item.position).project(camera)
+      let dx = (p.x * w) / 2
+      let dy = (-p.y * h) / 2
+      // Atrás da câmera a projeção inverte: espelha para apontar para o lado certo
+      if (p.z > 1) { dx = -dx; dy = -dy }
+      const onScreen = p.z <= 1 && Math.abs(dx) < cx - ARROW_MARGIN && Math.abs(dy) < cy - ARROW_MARGIN
+      if (onScreen) continue
+      if (dx === 0 && dy === 0) dy = 1
+      // Encosta na borda: escala o vetor até tocar o retângulo menos a margem
+      const k = Math.min((cx - ARROW_MARGIN) / Math.abs(dx || 1e-6), (cy - ARROW_MARGIN) / Math.abs(dy || 1e-6))
+      const x = cx + dx * k
+      const y = cy + dy * k
+      const a = this.arrow(used++)
+      if (a.kind !== item.kind) {
+        a.kind = item.kind
+        a.root.style.setProperty('--arrow', ARROW_KINDS[item.kind])
+      }
+      a.root.hidden = false
+      a.root.style.opacity = (1 - 0.55 * (dist / ARROW_RANGE)).toFixed(2)
+      a.root.style.transform = `translate(${x}px, ${y}px) rotate(${Math.atan2(dy, dx)}rad)`
+    }
+    for (let i = used; i < this.pool.length; i++) this.pool[i].root.hidden = true
+  }
+
+  hide() {
+    for (const a of this.pool) a.root.hidden = true
   }
 }
 
@@ -356,7 +466,7 @@ export class UltimateBanner {
     this.key = ''
   }
 
-  /** @param {{ title: string, sub?: string, tone?: 'warn' | 'go' | 'mine' | 'enemy' } | null} info */
+  /** @param {{ title: string, sub?: string, tone?: 'warn' | 'go' | 'mine' | 'enemy' | 'heal' | 'levelup' } | null} info */
   show(info) {
     const key = info ? `${info.title}|${info.sub ?? ''}|${info.tone ?? ''}` : ''
     if (key === this.key) return
@@ -372,5 +482,42 @@ export class UltimateBanner {
       void this.root.offsetWidth
       this.root.style.animation = ''
     }
+  }
+}
+
+/** Relógio da partida (topo da tela); nos últimos 30 s pulsa em vermelho. */
+export class MatchClock {
+  constructor() {
+    this.root = el('div', 'match-clock')
+    this.root.hidden = true
+    document.body.append(this.root)
+    this.text = ''
+  }
+
+  /** @param {string | null} text "4:59", ou null para esconder */
+  show(text, urgent = false) {
+    this.root.hidden = text === null
+    if (text === null || text === this.text) return
+    this.text = text
+    this.root.textContent = text
+    this.root.classList.toggle('urgent', urgent)
+  }
+}
+
+const FEED_TIME = 4 // s que cada linha fica
+
+/** Kill feed: "Ana ⚔ Beto" no canto, some sozinho. */
+export class KillFeed {
+  constructor() {
+    this.root = el('div', 'kill-feed')
+    document.body.append(this.root)
+  }
+
+  add(killer, victim, mine = false) {
+    const row = el('div', mine ? 'kill mine' : 'kill')
+    row.append(el('span', 'killer', killer), el('span', 'icon', ' ⚔ '), el('span', 'victim', victim))
+    this.root.prepend(row)
+    while (this.root.children.length > 5) this.root.lastChild.remove()
+    setTimeout(() => row.remove(), FEED_TIME * 1000)
   }
 }

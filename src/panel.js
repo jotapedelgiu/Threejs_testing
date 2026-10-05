@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import GUI from 'three/examples/jsm/libs/lil-gui.module.min.js'
 import { toonGlobals } from './toon.js'
 import { outlineParams, outlineOptions } from './outline.js'
+import { bloomOptions } from './bloom.js'
 import { damageParams } from './damage.js'
 
 // Painel de controles (lil-gui). Os valores são guardados pelo NOME de cada
@@ -32,7 +33,7 @@ export class ControlPanel {
    *   sparks: import('./sparks.js').SparkEffects,
    *   batPaint: { params: { base: string, spikes: string }, apply: () => void },
    *   tirePaint: { params: { color: string }, apply: () => void },
-   *   quality: { maxPixelRatio: number, shadowSize: number, showFps: boolean },
+   *   quality: { maxPixelRatio: number, shadowSize: number, maxFps: number, showFps: boolean },
    *   onQualityChange: () => void,
    *   onRerollLivery: () => void,
    * }} deps
@@ -85,6 +86,7 @@ export class ControlPanel {
     const perf = gui.addFolder('Performance')
     perf.add(quality, 'maxPixelRatio', 0.5, 2, 0.25).name('max. resolution (pixel ratio)').onChange(onQualityChange)
     perf.add(quality, 'shadowSize', { low: 512, medium: 1024, high: 2048 }).name('shadow quality').onChange(onQualityChange)
+    perf.add(quality, 'maxFps', { unlimited: 0, 30: 30, 60: 60, 120: 120, 144: 144 }).name('FPS limit').onChange(onQualityChange)
     perf.add(quality, 'showFps').name('show FPS').onChange(onQualityChange)
 
     const batFolder = gui.addFolder('Spiked posts')
@@ -138,13 +140,20 @@ export class ControlPanel {
     outline.add(outlineParams.uNormalThreshold, 'value', 0.05, 1.5, 0.01).name('crease threshold')
     outline.addColor(colorProxy(outlineParams.uOutlineColor), 'value').name('color')
 
+    const bloomFolder = gui.addFolder('Bloom')
+    bloomFolder.add(bloomOptions, 'enabled').name('enabled')
+    bloomFolder.add(bloomOptions, 'threshold', 0, 1, 0.01).name('threshold')
+    bloomFolder.add(bloomOptions, 'knee', 0, 0.5, 0.01).name('softness')
+    bloomFolder.add(bloomOptions, 'strength', 0, 2, 0.01).name('strength')
+    bloomFolder.add(bloomOptions, 'radius', 0.5, 3, 0.05).name('spread')
+
     const sunFolder = gui.addFolder('Sun')
     const moveSun = () => sun.updatePosition()
     sunFolder.add(sun.params, 'azimuth', 0, 360, 1).name('azimuth').onChange(moveSun)
     sunFolder.add(sun.params, 'elevation', -89, 89, 1).name('elevation').onChange(moveSun)
 
     // Pastas de visual começam fechadas para o painel não tomar a tela
-    for (const f of [bg, shading, rim, halftone, outline, sunFolder]) f.close()
+    for (const f of [bg, shading, rim, halftone, outline, bloomFolder, sunFolder]) f.close()
     this.preventFormRestore()
   }
 

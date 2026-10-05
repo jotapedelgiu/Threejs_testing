@@ -5,7 +5,8 @@
 // Mensagens:
 //   state  { t, x, z, yaw, vx, vz, y, roll, pitch, boosting, tp, hp, ko, shield, livery, colors, ult }
 //          (ult = tipo do ultimate em uso agora, ou null; ms = mísseis disparados até agora:
-//          aumentou = lançar um míssil daquele carro)
+//          aumentou = lançar um míssil daquele carro; deaths = mortes na partida; koBy = quantas
+//          vezes foi nocauteado por quem: { id: n } (o placar de abates sai daqui; match.js))
 //          (tp = contador de teletransportes: mudou, não interpola)
 //          estado do carrinho de quem manda, 20x por segundo (t = relógio de simulação)
 //   hit    { target, ix, iz, damage, boosted, stun, zap, blast, rocket }  quem bateu: empurrão e
@@ -22,6 +23,7 @@
 //                                               given = último entregue { n, owner, kind }; ultimate.js)
 //   ultreq { n, op }                            pedido ao anfitrião: 'claim' (passei no centro)
 //   medkit { v, zones: [{ id, x, z, left }] }   zonas de cura ativas (só o anfitrião manda; medkit.js)
+//   match  { left, over }                       relógio da partida (só o anfitrião manda; match.js)
 
 // Qualquer jogador pode mandar qualquer coisa. Um NaN num empurrão quebraria a
 // física de quem recebe para sempre, e um valor gigante jogaria o carro para
@@ -38,6 +40,16 @@ const str = (v, maxLength) => (typeof v === 'string' && v.length <= maxLength ? 
 const isColor = (v) => typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v)
 const anyNull = (o) => Object.values(o).some((v) => v === null)
 const ULT_PHASES = ['waiting', 'warning', 'available']
+// "Quem me nocauteou" / "quem me ajudou a cair" (koBy/asBy): até 16 jogadores, contagens inteiras
+const countsOf = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+  const out = {}
+  for (const [id, n] of Object.entries(v).slice(0, 16)) {
+    const count = int(n, 0, 1e5)
+    if (id.length <= 64 && count) out[id] = count
+  }
+  return out
+}
 const ULT_OPS = ['claim']
 const NAME_MAX = 16 // igual a lobby.js
 const PHASES = ['lobby', 'playing']
@@ -70,6 +82,10 @@ export const validators = {
     out.colors = Array.isArray(m.colors) && m.colors.length === 2 && m.colors.every(isColor) ? m.colors : null
     out.ult = ULT_KINDS.includes(m.ult) ? m.ult : null
     out.ms = int(m.ms, 0, 1e6) ?? 0
+    out.deaths = int(m.deaths, 0, 1e6) ?? 0
+    out.koBy = countsOf(m.koBy)
+    out.asBy = countsOf(m.asBy)
+    out.xpBy = countsOf(m.xpBy)
     return out
   },
   hit(m) {
@@ -146,6 +162,10 @@ export const validators = {
       left: num(z?.left, 0, 600),
     }))
     return zones.some(anyNull) ? null : { v, zones }
+  },
+  match(m) {
+    const left = num(m?.left, 0, 3600)
+    return left === null ? null : { left, over: m.over === true }
   },
   ultreq(m) {
     const n = int(m?.n, 0, 1e9)

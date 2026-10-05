@@ -179,8 +179,51 @@ export class MenuUI {
   /** Esconde as telas (a partida começou). */
   close() {
     this.root.hidden = true
+    if (this.results) this.results.hidden = true
     document.body.classList.remove('in-menu')
     document.activeElement?.blur?.() // Espaço não pode "clicar" num botão escondido
+  }
+
+  /**
+   * Fim da partida: quem venceu e o placar de todos.
+   * @param {{ id: string, name: string, kills: number, assists: number, deaths: number, me: boolean }[]} ranked
+   *   já na ordem da classificação
+   * @param {{ winnerIds: Set<string>, isHost: boolean, onAgain: () => void, onLeave: () => void }} opts
+   */
+  showResults(ranked, { winnerIds, isHost, onAgain, onLeave }) {
+    if (!this.results) {
+      this.results = el('div', 'menu-card results')
+      this.root.append(this.results)
+    }
+    const won = ranked.filter((p) => winnerIds.has(p.id))
+    const iWon = won.some((p) => p.me)
+    const title = won.length === 0 ? 'DRAW!'
+      : won.length > 1 ? (iWon ? 'SHARED VICTORY!' : 'DRAW!')
+      : iWon ? 'VICTORY!' : `${won[0].name} WINS!`
+    const head = el('div', 'result-row head')
+    head.append(el('span', '', '#'), el('span', '', 'Player'), el('span', '', 'K'), el('span', '', 'D'), el('span', '', 'A'))
+    const rows = ranked.map((p, i) => {
+      const row = el('div', `result-row${winnerIds.has(p.id) ? ' winner' : ''}${p.me ? ' me' : ''}`)
+      const name = el('span', 'name', p.name)
+      if (p.me) name.append(el('span', 'tag', 'you'))
+      row.append(el('span', 'rank', String(i + 1)), name, el('span', 'kills', String(p.kills)), el('span', '', String(p.deaths)), el('span', '', String(p.assists ?? 0)))
+      return row
+    })
+    const again = button('Play again', 'primary', onAgain)
+    again.hidden = !isHost
+    this.results.replaceChildren(
+      el('p', 'eyebrow', 'Match over'),
+      el('h1', `result-title${iWon ? ' win' : ''}`, title),
+      head, ...rows,
+      again,
+      el('p', 'waiting', isHost ? '' : 'Waiting for the host to start a new match…'),
+      button('Leave', 'ghost', onLeave),
+    )
+    this.home.hidden = true
+    this.lobby.hidden = true
+    this.results.hidden = false
+    this.root.hidden = false
+    document.body.classList.add('in-menu')
   }
 
   /** Contagem: número inteiro (3, 2, 1), 0 = "JÁ!", null = some. */
