@@ -316,7 +316,10 @@ export class BotBrain {
     }
 
     // Ultimate: o objetivo mais valioso. Chega antes de aparecer
-    const item = world.ult && { ...world.ult, x: world.ult.x ?? 0, z: world.ult.z ?? 0 }
+    // O item mais perto (dois ao mesmo tempo); sem lista, o do centro
+    const spots = world.ult?.items ?? [{ x: world.ult?.x ?? 0, z: world.ult?.z ?? 0 }]
+    const near = spots.reduce((best, s) => (!best || dist(self, s) < dist(self, best) ? s : best), null)
+    const item = world.ult && near && { ...world.ult, x: near.x ?? 0, z: near.z ?? 0 }
     if (item && !ult.stored && !ult.active) {
       const d = Math.hypot(self.x - item.x, self.z - item.z)
       const travel = d / world.maxSpeed + 1.5

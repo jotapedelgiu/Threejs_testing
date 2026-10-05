@@ -1447,6 +1447,61 @@ body.in-menu .item-arrows {
   display: none;
 }
 
+/* Só a seta gira (o texto fica de pé) */
+.item-arrow .turn {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 0;
+  height: 0;
+}
+
+.item-arrow .label {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.5px;
+  color: var(--arrow);
+  -webkit-text-stroke: 3px #000;
+  paint-order: stroke fill;
+  text-shadow: 2px 2px 0 #000;
+}
+
+.item-arrow .label:empty {
+  display: none;
+}
+
+/* Ultimate: bem maior, pulsando e com brilho amarelo, para ninguém perder */
+.item-arrow[data-kind='ultimate'] {
+  z-index: 2;
+}
+
+.item-arrow[data-kind='ultimate'] .tip {
+  left: -19px;
+  top: -19px;
+  width: 38px;
+  height: 38px;
+  filter: drop-shadow(2px 2px 0 #000) drop-shadow(0 0 8px #ffd23f);
+  animation: ult-arrow-pulse 0.55s ease-in-out infinite alternate;
+}
+
+.item-arrow[data-kind='ultimate'] .tip polygon {
+  stroke-width: 3;
+}
+
+.item-arrow[data-kind='ultimate'] .label {
+  font-size: 14px;
+}
+
+@keyframes ult-arrow-pulse {
+  from { scale: 0.85; }
+  to { scale: 1.2; }
+}
+
 /* Seta apontando para +x (a rotação do JS aponta para o item), com contorno preto */
 .item-arrow .tip {
   position: absolute;

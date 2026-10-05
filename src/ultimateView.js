@@ -3,7 +3,7 @@ import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js'
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js'
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js'
 import { createToonMaterial } from './toon.js'
-import { ULTIMATES } from './ultimate.js'
+import { ULTIMATES, ULT_ITEMS } from './ultimate.js'
 
 // Visual do ultimate (só desenho; as regras ficam em ultimate.js):
 //  - feixe de luz onde o item vai estar: fraco no aviso, forte com o item lá
@@ -43,24 +43,31 @@ export class UltimateView {
   constructor(scene) {
     this.time = 0
 
-    // Feixe + cristal no centro
-    this.beacon = new THREE.Group()
+    // Feixe + cristal de cada item (ULT_ITEMS ao mesmo tempo); a aparência
+    // (aviso fraco / item forte) é a mesma para todos, então os materiais são
+    // compartilhados
     this.beamMaterial = new THREE.MeshBasicMaterial({
       color: ELECTRIC, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
     })
-    this.beam = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.1, BEAM_HEIGHT, 24, 1, true), this.beamMaterial)
-    this.beam.position.y = BEAM_HEIGHT / 2
-    this.crystal = new THREE.Mesh(
-      new THREE.OctahedronGeometry(0.9),
-      createToonMaterial({ color: '#fff3a0', emissive: '#c79a00', glossiness: 10 }),
-    )
-    this.crystal.castShadow = true
     this.padMaterial = this.ringMaterial(0)
-    this.pad = new THREE.Mesh(new THREE.RingGeometry(2.1, 2.5, 48), this.padMaterial)
-    this.pad.rotation.x = -Math.PI / 2
-    this.pad.position.y = 0.03
-    this.beacon.add(this.beam, this.crystal, this.pad)
-    scene.add(this.beacon)
+    const beamGeometry = new THREE.CylinderGeometry(1.1, 1.1, BEAM_HEIGHT, 24, 1, true)
+    const crystalGeometry = new THREE.OctahedronGeometry(0.9)
+    const crystalMaterial = createToonMaterial({ color: '#fff3a0', emissive: '#c79a00', glossiness: 10 })
+    const padGeometry = new THREE.RingGeometry(2.1, 2.5, 48)
+    this.beacons = Array.from({ length: ULT_ITEMS }, () => {
+      const group = new THREE.Group()
+      const beam = new THREE.Mesh(beamGeometry, this.beamMaterial)
+      beam.position.y = BEAM_HEIGHT / 2
+      const crystal = new THREE.Mesh(crystalGeometry, crystalMaterial)
+      crystal.castShadow = true
+      const pad = new THREE.Mesh(padGeometry, this.padMaterial)
+      pad.rotation.x = -Math.PI / 2
+      pad.position.y = 0.03
+      group.add(beam, crystal, pad)
+      group.visible = false
+      scene.add(group)
+      return { group, beam, crystal, pad }
+    })
 
     // Círculos das tempestades: um por carro com a Sobrecarga ativa
     this.stormMaterial = this.ringMaterial(0.8)
@@ -220,7 +227,7 @@ export class UltimateView {
 
   /** Malhas que o contorno deve ignorar (transparentes / brilho). */
   get meshes() {
-    return [this.beam, this.pad, this.boltLines, ...this.stormMeshes, ...this.slamMeshes, ...this.waveMeshes, ...this.trailMeshes]
+    return [...this.beacons.flatMap((b) => [b.beam, b.pad]), this.boltLines, ...this.stormMeshes, ...this.slamMeshes, ...this.waveMeshes, ...this.trailMeshes]
   }
 
   /** Linhas grossas medem em pixels: chamar ao criar e ao redimensionar. */
@@ -264,20 +271,25 @@ export class UltimateView {
    * @param {{ phase: string, storms: { position: THREE.Vector3, radius: number }[], missiles: import('./ultimate.js').MissileShot[] }} state
    *   storms = carros com a Sobrecarga ativa; missiles = mísseis voando ou com rastro
    */
-  update(dt, { phase, x = 0, z = 0, storms, missiles = [], slams = [] }) {
+  update(dt, { phase, items = [], storms, missiles = [], slams = [] }) {
     this.time += dt
     const t = this.time
-    this.beacon.position.set(x, 0, z)
 
-    // Centro: aviso = feixe fraco piscando; item lá = feixe forte + cristal
+    // Itens: aviso = feixe fraco piscando; item lá = feixe forte + cristal
+    // `items` = { x, z }[] (os lugares; só os que ainda dá para pegar)
     const warning = phase === 'warning', available = phase === 'available'
-    this.beacon.visible = warning || available
     this.beamMaterial.opacity = available ? 0.32 + 0.08 * Math.sin(t * 6) : warning ? 0.08 + 0.06 * Math.sin(t * 10) : 0
     this.padMaterial.opacity = available ? 0.8 : warning ? 0.35 : 0
-    this.crystal.visible = available
-    this.crystal.position.y = 1.6 + Math.sin(t * 2.5) * 0.25
-    this.crystal.rotation.y = t * 2
-    this.crystal.scale.setScalar(1 + 0.08 * Math.sin(t * 8))
+    this.beacons.forEach((b, i) => {
+      const item = items[i]
+      b.group.visible = !!item && (warning || available)
+      if (!b.group.visible) return
+      b.group.position.set(item.x, 0, item.z)
+      b.crystal.visible = available
+      b.crystal.position.y = 1.6 + Math.sin(t * 2.5 + i) * 0.25
+      b.crystal.rotation.y = t * 2 + i
+      b.crystal.scale.setScalar(1 + 0.08 * Math.sin(t * 8 + i))
+    })
 
     // Tempestades em volta de cada dono
     storms.forEach(({ position, radius }, i) => {

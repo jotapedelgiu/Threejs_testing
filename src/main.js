@@ -29,7 +29,7 @@ import { Presence } from './presence.js'
 import { MenuUI } from './menu.js'
 import { newRoomCode, normalizeCode, hostOf } from './lobby.js'
 import { pickLivery, readColors, swatch, setBoostGlow, setUltimateGlow, MATERIAL_GROUPS, DEFAULT_GROUP, materialGroup } from './paint.js'
-import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ambushStrikes, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, storeTimeFor } from './ultimate.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ambushStrikes, ULT_ITEMS, ULTIMATES, ULT_KINDS, ULT_PICKUP_RADIUS, storeTimeFor } from './ultimate.js'
 import { UltimateView } from './ultimateView.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, maxZonesFor } from './medkit.js'
 import { MedkitView } from './medkitView.js'
@@ -320,6 +320,7 @@ loadCarModel().then(
 
     remotes = new RemotePlayers(scene, model.clone(true), bodyMaterials)
     car = new Car(model)
+    outline.highlight(car.root) // contorno roxo no meu carro (outline.js)
     // Cápsula de colisão: contorno do carro visto de cima, com ele na origem
     car.root.updateMatrixWorld(true)
     footprint = measureFootprint(model)
@@ -611,7 +612,7 @@ function startMultiplayer() {
     },
     onUltReq(req, peerId) {
       if (!inMatch() || !amHost() || req.n !== ultimate.n) return
-      if (ultimate.claim(peerId)) {
+      if (ultimate.claim(peerId, req.i)) {
         checkUltGiven()
         broadcastUlt()
       }
@@ -1160,7 +1161,7 @@ function botWorld() {
     orbs: orbs.slots.filter((slot) => orbs.isActive(slot)).map((slot) => slot.mesh.position),
     heal: medkit.zones.map((z) => ({ x: z.x, z: z.z, radius: MEDKIT.radius })),
     obstacles,
-    ult: { phase: ultimate.phase, timer: ultimate.timer, x: ultimate.x, z: ultimate.z },
+    ult: botUltItems(),
     halfX: arena.halfX, halfZ: arena.halfZ,
     maxBoosts: MAX_BOOSTS, maxSpeed: car.params.maxSpeed, turnSpeed: car.params.turnSpeed,
   }
@@ -1230,11 +1231,20 @@ function driveBot(bot, world, dt, simTime) {
 
 // Bot passando no item: é dele (só o anfitrião concede)
 function claimUltForBot(bot) {
-  if (ultimate.phase !== 'available' || !bot.ult.canPickUp || !amHost()) return
-  if (Math.hypot(bot.x - ultimate.x, bot.z - ultimate.z) >= ULT_PICKUP_RADIUS) return
-  if (!ultimate.claim(bot.id)) return
+  if (!bot.ult.canPickUp || !amHost()) return
+  const item = ultimate.claimable().find((i) => Math.hypot(bot.x - i.x, bot.z - i.z) < ULT_PICKUP_RADIUS)
+  if (!item || !ultimate.claim(bot.id, item.index)) return
   checkUltGiven()
   broadcastUlt()
+}
+
+// O que os bots enxergam dos itens: no aviso, os lugares onde vão aparecer;
+// depois, os que ainda dá para pegar (bots.js: BotWorld.ult)
+function botUltItems() {
+  const claimable = ultimate.claimable()
+  if (claimable.length) return { phase: 'available', timer: 0, items: claimable }
+  if (ultimate.phase === 'warning') return { phase: 'warning', timer: ultimate.timer, items: ultimate.items.filter(Boolean) }
+  return { phase: ultimate.phase, timer: ultimate.timer, items: [] }
 }
 
 function castBotUlt(bot) {
@@ -1615,10 +1625,11 @@ function updateUltimate(dt, stunned) {
 
   const pos = car.root.position
   // Pegar: vaga livre e passando no item (o pedido vai ao anfitrião)
-  if (ultimate.phase === 'available' && ultSlot.canPickUp && !health.isKO && ultClaimed !== ultimate.n && Math.hypot(pos.x - ultimate.x, pos.z - ultimate.z) < ULT_PICKUP_RADIUS) {
-    ultClaimed = ultimate.n
-    if (!host) net.sendUltReq({ n: ultimate.n, op: 'claim' })
-    else if (ultimate.claim(net.selfId)) {
+  const item = ultSlot.canPickUp && !health.isKO ? ultimate.claimable().find((i) => Math.hypot(pos.x - i.x, pos.z - i.z) < ULT_PICKUP_RADIUS) : null
+  if (item && ultClaimed !== ultimate.n * ULT_ITEMS + item.index) {
+    ultClaimed = ultimate.n * ULT_ITEMS + item.index
+    if (!host) net.sendUltReq({ n: ultimate.n, op: 'claim', i: item.index })
+    else if (ultimate.claim(net.selfId, item.index)) {
       checkUltGiven()
       broadcastUlt()
     }
@@ -1719,19 +1730,16 @@ function setGhostLook(on) {
   })
 }
 
-// Escuridão (como a ult do Nocturne): alguém invisível na arena escurece a
-// tela, com um pouco de visão em volta do meu carro. Para quem está invisível
-// escurece menos (ele sabe onde está). Camada por cima da arena, embaixo do HUD
+// Escuridão (como a ult do Nocturne): só para quem está invisível, a tela
+// escurece com um pouco de visão em volta do meu carro. Os outros jogadores
+// não são afetados. Camada por cima da arena, embaixo do HUD
 const darkness = document.createElement('div')
 darkness.className = 'darkness'
 renderer.domElement.after(darkness)
 const tmpDark = new THREE.Vector3()
 function updateDarkness() {
-  let level = 0
-  if (inMatch() && car && remotes) {
-    for (const p of remotes.values()) if (p.ghost && !p.ko) level = 1
-    if (ultSlot.ghost && !health.isKO) level = Math.max(level, 0.55)
-  }
+  // Só quem está invisível vê a tela escurecer
+  const level = inMatch() && car && ultSlot.ghost && !health.isKO ? 0.75 : 0
   darkness.style.opacity = level
   if (!level) return
   // Visão centrada no meu carro (onde ele está na tela)
@@ -1750,6 +1758,7 @@ function showSlam(position) {
 
 // Desenho: feixe/item, círculos das tempestades, brilho e a faixa de aviso
 function renderUltimate(dt) {
+  const claimable = ultimate.claimable()
   activeSlams.length = 0
   const addSlam = (position) => {
     const s = (slamPool[activeSlams.length] ??= {})
@@ -1773,7 +1782,7 @@ function renderUltimate(dt) {
     if (p.ult === 'ambush' && !p.ghost) addSlam(p.car.root.position)
     enemyPowered ??= id
   }
-  ultView.update(dt, { phase: ultimate.phase, x: ultimate.x, z: ultimate.z, storms: activeStorms, missiles: missileShots, slams: activeSlams })
+  ultView.update(dt, { phase: claimable.length ? 'available' : ultimate.phase, items: claimable.length ? claimable : ultimate.items.filter(Boolean), storms: activeStorms, missiles: missileShots, slams: activeSlams })
 
   // Brilho da carroceria: pulsa com o ultimate; azul no boost
   const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 70)
@@ -1801,10 +1810,11 @@ function renderUltimate(dt) {
     const spec = ULTIMATES[remotes.get(enemyPowered).ult]
     ultBanner.show({ title: `⚡ ${playerName(enemyPowered)} · ${spec.name}`, sub: spec.enemyHint, tone: 'enemy' })
   } else if (ultimate.phase === 'warning') {
-    ultBanner.show({ title: `⚡ ULTIMATE IN ${left}`, sub: 'watch for the beam of light', tone: 'warn' })
-  } else if (ultimate.phase === 'available') {
-    const sub = ultSlot.canPickUp ? 'drive over it to grab it' : 'your ult slot is full'
-    ultBanner.show({ title: `⚡ ${ULTIMATES[ultimate.kind].name} IS OUT!`, sub, tone: 'go' })
+    ultBanner.show({ title: `⚡ ${ULT_ITEMS} ULTIMATES IN ${left}`, sub: 'watch for the beams of light', tone: 'warn' })
+  } else if (claimable.length) {
+    const sub = ultSlot.canPickUp ? (claimable.length > 1 ? 'one slot: pick the one you want' : 'drive over it to grab it') : 'your ult slot is full'
+    const names = claimable.map((i) => ULTIMATES[i.kind].name).join(' + ')
+    ultBanner.show({ title: `⚡ ${names} ${claimable.length > 1 ? 'ARE' : 'IS'} OUT!`, sub, tone: 'go' })
   } else {
     ultBanner.show(null)
   }
@@ -1974,16 +1984,16 @@ const arenaView = [
   { position: new THREE.Vector3(-arena.halfX * 0.7, 0, -arena.halfZ * 0.7), velocity: new THREE.Vector3() },
   { position: new THREE.Vector3(arena.halfX * 0.7, 0, arena.halfZ * 0.7), velocity: new THREE.Vector3() },
 ]
-const arenaCenter = { position: new THREE.Vector3(), velocity: new THREE.Vector3() }
+const arenaCenters = Array.from({ length: ULT_ITEMS }, () => ({ position: new THREE.Vector3(), velocity: new THREE.Vector3() }))
 function cameraSubjects() {
   if (!inMatch()) return arenaView
   subjects.length = 0
   if (car && !health.isKO) subjects.push(car)
   if (remotes) for (const { car: remote, ko, ghost } of remotes.values()) if (remote.hasState && !ko && !ghost) subjects.push(remote)
-  if (ultimate.phase === 'available') {
-    arenaCenter.position.set(ultimate.x, 0, ultimate.z)
-    subjects.push(arenaCenter) // todo mundo vê onde está o item
-  }
+  ultimate.claimable().forEach((item, i) => {
+    arenaCenters[i].position.set(item.x, 0, item.z)
+    subjects.push(arenaCenters[i]) // todo mundo vê onde estão os itens
+  })
   return subjects
 }
 
@@ -2003,8 +2013,9 @@ function sparkEmitters() {
     emitters.push(e)
   }
   if (!health.isKO) add(car.body, car.velocity, car.isBoosting, isPowered(net.selfId))
-  for (const [peerId, { car: remote, boosting, ko }] of remotes.entries()) {
-    if (remote.hasState && !ko) add(remote.body, remote.velocity, boosting, isPowered(peerId))
+  for (const [peerId, { car: remote, boosting, ko, ghost }] of remotes.entries()) {
+    // Invisível (Emboscada): sem faíscas, senão elas entregam onde ele está
+    if (remote.hasState && !ko && !ghost) add(remote.body, remote.velocity, boosting, isPowered(peerId))
   }
   return emitters
 }
@@ -2015,13 +2026,24 @@ const tagSubjects = []
 const tagPool = []
 // Itens que ganham seta (lista reaproveitada a cada quadro)
 const arrowList = []
-const arrowCenter = new THREE.Vector3()
+const arrowPool = []
+const arrowCenters = Array.from({ length: ULT_ITEMS }, () => new THREE.Vector3())
 function arrowItems() {
   arrowList.length = 0
   if (!boostLocked()) {
     for (const slot of orbs.slots) if (orbs.isActive(slot)) arrowList.push({ kind: 'boost', position: slot.mesh.position })
   }
-  if (ultimate.phase === 'available' && ultSlot.canPickUp) arrowList.push({ kind: 'ultimate', position: arrowCenter.set(ultimate.x, 0, ultimate.z) })
+  // Ultimates: setas grandes, de qualquer distância, com o nome (no aviso, só "ULT SOON")
+  if (ultSlot.canPickUp) {
+    const claimable = ultimate.claimable()
+    const spots = claimable.length ? claimable : ultimate.phase === 'warning' ? ultimate.items.filter(Boolean) : []
+    spots.forEach((item, i) => {
+      const arrow = (arrowPool[arrowList.length] ??= { kind: 'ultimate', range: Infinity })
+      arrow.position = arrowCenters[i].set(item.x, 0, item.z)
+      arrow.label = item.kind ? ULTIMATES[item.kind].name : 'ULT SOON'
+      arrowList.push(arrow)
+    })
+  }
   return arrowList
 }
 

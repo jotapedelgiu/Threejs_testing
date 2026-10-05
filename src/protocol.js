@@ -21,9 +21,10 @@
 //   hello  { name, since, phase }               quem sou eu: nome, quando entrei na sala e se
 //                                               estou na sala de espera ('lobby') ou jogando
 //   start  { seed, since }                      o anfitrião começou a partida (mapa dela)
-//   ult    { n, phase, kind, left, x, z, given } item do ultimate (x, z = onde está) (só o anfitrião manda;
-//                                               given = último entregue { n, owner, kind }; ultimate.js)
-//   ultreq { n, op }                            pedido ao anfitrião: 'claim' (passei no centro)
+//   ult    { n, phase, left, items, given }     itens do ultimate (só o anfitrião manda; items =
+//                                               [{ x, z, kind } | null], kind null no aviso; given =
+//                                               último entregue { n, owner, kind }; ultimate.js)
+//   ultreq { n, op, i }                         pedido ao anfitrião: 'claim' (passei no item i)
 //   medkit { v, zones: [{ id, x, z, left }] }   zonas de cura ativas (só o anfitrião manda; medkit.js)
 //   match  { left, over }                       relógio da partida (só o anfitrião manda; match.js)
 //   bots   { list: [{ id, name, kind, state }] } bots da partida (só o anfitrião manda, 20x por
@@ -36,7 +37,7 @@
 // física de quem recebe para sempre, e um valor gigante jogaria o carro para
 // fora do mapa; então tudo é conferido e limitado antes de chegar ao jogo.
 // Mensagem inválida é descartada (null).
-import { ULT_KINDS } from './ultimate.js'
+import { ULT_KINDS, ULT_ITEMS } from './ultimate.js'
 import { CHAIN_MAX } from './damage.js'
 
 const MAX_SPEED = 60 // m/s; bem acima de qualquer velocidade real do jogo
@@ -157,13 +158,22 @@ export const validators = {
     const out = {
       n: int(m?.n, 0, 1e9),
       left: num(m?.left, 0, 600),
-      x: num(m?.x ?? 0, -500, 500),
-      z: num(m?.z ?? 0, -500, 500),
     }
     if (anyNull(out) || !ULT_PHASES.includes(m.phase)) return null
     out.phase = m.phase
-    out.kind = ULT_KINDS.includes(m.kind) ? m.kind : null
-    if (out.phase === 'available' && !out.kind) return null
+    const raw = m.items ?? []
+    if (!Array.isArray(raw) || raw.length > ULT_ITEMS) return null
+    out.items = []
+    for (const item of raw) {
+      if (item == null) {
+        out.items.push(null)
+        continue
+      }
+      const entry = { x: num(item.x, -500, 500), z: num(item.z, -500, 500), kind: ULT_KINDS.includes(item.kind) ? item.kind : null }
+      if (entry.x === null || entry.z === null) return null
+      out.items.push(entry)
+    }
+    if (out.phase === 'available' && !out.items.some((i) => i?.kind)) return null
     out.given = null
     if (m.given != null) {
       const given = { n: int(m.given.n, 0, 1e9), owner: str(m.given.owner, 64), kind: ULT_KINDS.includes(m.given.kind) ? m.given.kind : null }
@@ -201,7 +211,8 @@ export const validators = {
   },
   ultreq(m) {
     const n = int(m?.n, 0, 1e9)
-    return n !== null && ULT_OPS.includes(m.op) ? { n, op: m.op } : null
+    const i = int(m?.i ?? 0, 0, ULT_ITEMS - 1)
+    return n !== null && i !== null && ULT_OPS.includes(m.op) ? { n, op: m.op, i } : null
   },
 }
 

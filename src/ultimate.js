@@ -1,9 +1,11 @@
-// Ultimate: um poder bem forte que aparece num lugar aleatório da arena a
-// cada 30 s, sorteado entre os tipos de ULTIMATES. Sem dependências, para poder ser
+// Ultimate: poderes bem fortes que aparecem em lugares aleatórios da arena a
+// cada 30 s: TRÊS ao mesmo tempo, longe uns dos outros e de tipos diferentes, sorteados entre os tipos
+// de ULTIMATES. Sem dependências, para poder ser
 // testado no Node.
 //
-// Item na arena: espera (30 s) → aviso nos últimos 10 s (o lugar já é sorteado
-// e o feixe aparece lá) → item lá → alguém pega → recomeça a espera. Quem pega
+// Itens na arena: espera (30 s) → aviso nos últimos 10 s (os lugares já são
+// sorteados e os feixes aparecem lá) → itens lá → alguém pega o primeiro →
+// recomeça a espera (o outro continua lá até o próximo aviso). Quem pega
 // guarda no inventário (UltimateSlot) e tem até ULT_STORE_TIME para usar,
 // senão perde; depois de usar, tem 30 s de recarga.
 //
@@ -20,6 +22,8 @@ export const ULT_PICKUP_RADIUS = 2.5 // m do item para pegar
 export const ULT_COOLDOWN = 30     // s depois de usar até poder usar outro (não passa do intervalo: o próximo item já pode ser usado)
 
 const CENTER = [{ x: 0, z: 0 }] // sem lugares para sortear: o centro
+export const ULT_ITEMS = 3        // itens de ultimate na arena a cada ciclo
+const ITEM_GAP = 8                 // m entre os dois quando só há um lugar
 
 /** Tipos de ultimate (o sorteio usa todos os desta lista). */
 export const ULTIMATES = {
@@ -120,16 +124,27 @@ export class UltimateDirector {
   reset() {
     this.n = 0             // número do ciclo (mensagens de ciclos velhos são ignoradas)
     this.phase = 'waiting' // 'waiting' | 'warning' | 'available'
-    this.kind = null       // tipo do item
-    this.x = 0             // onde o item está (sorteado no aviso)
-    this.z = 0
+    // Itens da arena: ULT_ITEMS por ciclo, cada um { x, z, kind } (kind = null
+    // no aviso) ou null se já foi pego. [] = nenhum. O que sobra de um ciclo
+    // continua lá até o próximo aviso
+    this.items = []
+    this.lastSpots = []    // lugares do ciclo anterior (o próximo evita repetir)
     this.timer = ULT_INTERVAL // s até a próxima fase
     this.given = null      // último item entregue: { n, owner, kind }
   }
 
+  /** Itens que dá para pegar agora: { index, x, z, kind }. */
+  claimable() {
+    const list = []
+    this.items.forEach((item, index) => {
+      if (item?.kind) list.push({ index, x: item.x, z: item.z, kind: item.kind })
+    })
+    return list
+  }
+
   /** Estado para mandar pela rede. */
   snapshot() {
-    return { n: this.n, phase: this.phase, kind: this.kind, left: Math.max(0, this.timer), x: this.x, z: this.z, given: this.given }
+    return { n: this.n, phase: this.phase, left: Math.max(0, this.timer), items: this.items.map((i) => (i ? { ...i } : null)), given: this.given }
   }
 
   /** Estado recebido do anfitrião. @returns se foi aceito */
@@ -137,17 +152,15 @@ export class UltimateDirector {
     if (state.n < this.n) return false
     this.n = state.n
     this.phase = state.phase
-    this.kind = state.kind
     this.timer = state.left
-    this.x = state.x
-    this.z = state.z
+    this.items = state.items.map((i) => (i ? { ...i } : null))
     this.given = state.given
     return true
   }
 
   /**
    * Avança o relógio. Só o anfitrião muda de fase.
-   * @param {{ x: number, z: number }[]} spots lugares possíveis para o item
+   * @param {{ x: number, z: number }[]} spots lugares possíveis para os itens
    * @returns true se a fase mudou (o anfitrião avisa a sala)
    */
   update(dt, isHost, spots = CENTER) {
@@ -155,37 +168,62 @@ export class UltimateDirector {
     if (!isHost) return false
     if (this.phase === 'waiting' && this.timer <= ULT_WARNING) {
       this.phase = 'warning'
-      this.place(spots)
+      this.place(spots) // o que sobrou do ciclo anterior some aqui
       return true
     }
     if (this.phase === 'warning' && this.timer <= 0) {
       this.phase = 'available'
-      this.kind = ULT_KINDS[Math.floor(this.random() * ULT_KINDS.length)]
       this.timer = 0
+      // Ultimates de tipos diferentes (repete tipos só se faltarem)
+      const pool = [...ULT_KINDS]
+      for (const item of this.items) {
+        const [kind] = pool.length ? pool.splice(Math.floor(this.random() * pool.length), 1) : ULT_KINDS
+        item.kind = kind
+      }
       return true
     }
     return false
   }
 
-  // Sorteia o lugar do próximo item, diferente do anterior quando dá
+  // Sorteia os lugares dos próximos itens: o primeiro ao acaso; cada um dos
+  // outros é o mais longe possível dos já escolhidos, então ficam espalhados
+  // pela arena. Evita os do ciclo anterior, quando dá
   place(spots) {
-    const options = spots.length > 1 ? spots.filter((p) => p.x !== this.x || p.z !== this.z) : spots
-    const spot = options[Math.floor(this.random() * options.length)] ?? CENTER[0]
-    this.x = spot.x
-    this.z = spot.z
+    const fresh = spots.filter((p) => !this.lastSpots.some((q) => q.x === p.x && q.z === p.z))
+    const options = [...(fresh.length >= ULT_ITEMS ? fresh : spots)]
+    const picked = []
+    if (options.length) picked.push(options.splice(Math.floor(this.random() * options.length), 1)[0])
+    const nearest = (p) => Math.min(...picked.map((q) => Math.hypot(p.x - q.x, p.z - q.z)))
+    while (picked.length < ULT_ITEMS && options.length) {
+      let best = 0
+      for (let i = 1; i < options.length; i++) if (nearest(options[i]) > nearest(options[best])) best = i
+      picked.push(options.splice(best, 1)[0])
+    }
+    // Poucos lugares (ex.: só o centro): o resto fica ao lado do primeiro
+    while (picked.length < ULT_ITEMS) {
+      const first = picked[0] ?? CENTER[0]
+      picked.push({ x: first.x + (first.x > 0 ? -ITEM_GAP : ITEM_GAP) * picked.length, z: first.z })
+    }
+    this.items = picked.map((p) => ({ x: p.x, z: p.z, kind: null }))
+    this.lastSpots = picked.map((p) => ({ x: p.x, z: p.z }))
   }
 
   /**
-   * Anfitrião: `id` passou no centro. O item vai para ele e a espera
-   * recomeça. @returns se ganhou o item
+   * Anfitrião: `id` passou num dos itens. Ele vai para esse jogador; o outro
+   * continua lá. A espera do próximo ciclo começa no primeiro que for pego.
+   * @returns se ganhou o item
    */
-  claim(id) {
-    if (this.phase !== 'available') return false
-    this.given = { n: this.n, owner: id, kind: this.kind }
+  claim(id, index = 0) {
+    const item = this.items[index]
+    if (!item?.kind) return false
+    this.given = { n: this.n, owner: id, kind: item.kind }
     this.n++
-    this.phase = 'waiting'
-    this.kind = null
-    this.timer = ULT_INTERVAL
+    this.items[index] = null
+    if (this.phase === 'available') {
+      this.phase = 'waiting'
+      this.timer = ULT_INTERVAL
+    }
+    if (this.items.every((i) => !i)) this.items = []
     return true
   }
 }

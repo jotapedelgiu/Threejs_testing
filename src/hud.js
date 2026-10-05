@@ -404,15 +404,18 @@ export class ItemArrows {
   arrow(i) {
     if (!this.pool[i]) {
       const arrow = el('div', 'item-arrow')
+      const turn = el('div', 'turn') // só a seta gira; o texto fica de pé
+      const label = el('div', 'label')
       const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg')
       svg.setAttribute('viewBox', '-12 -12 24 24')
       svg.classList.add('tip')
       const shape = document.createElementNS('http://www.w3.org/2000/svg', 'polygon')
       shape.setAttribute('points', '-7,-8 9,0 -7,8 -3,0')
       svg.append(shape)
-      arrow.append(svg)
+      turn.append(svg)
+      arrow.append(turn, label)
       this.layer.append(arrow)
-      this.pool[i] = { root: arrow, kind: '' }
+      this.pool[i] = { root: arrow, turn, label, kind: '', text: '' }
     }
     return this.pool[i]
   }
@@ -420,7 +423,8 @@ export class ItemArrows {
   /**
    * @param {THREE.Camera} camera
    * @param {THREE.Vector3} from  de onde medir a distância (meu carro)
-   * @param {Iterable<{ kind: keyof typeof ARROW_KINDS, position: THREE.Vector3 }>} items
+   * @param {Iterable<{ kind: keyof typeof ARROW_KINDS, position: THREE.Vector3, label?: string, range?: number }>} items
+   *   label = texto junto da seta; range = distância máxima (padrão ARROW_RANGE; Infinity = sempre)
    */
   update(camera, from, items) {
     const w = window.innerWidth
@@ -430,7 +434,8 @@ export class ItemArrows {
     let used = 0
     for (const item of items) {
       const dist = Math.hypot(item.position.x - from.x, item.position.z - from.z)
-      if (dist > ARROW_RANGE) continue
+      const range = item.range ?? ARROW_RANGE
+      if (dist > range) continue
       const p = this.tmp.copy(item.position).project(camera)
       let dx = (p.x * w) / 2
       let dy = (-p.y * h) / 2
@@ -447,10 +452,19 @@ export class ItemArrows {
       if (a.kind !== item.kind) {
         a.kind = item.kind
         a.root.style.setProperty('--arrow', ARROW_KINDS[item.kind])
+        a.root.dataset.kind = item.kind
+      }
+      const text = item.label ?? ''
+      if (a.text !== text) {
+        a.text = text
+        a.label.textContent = text
       }
       a.root.hidden = false
-      a.root.style.opacity = (1 - 0.55 * (dist / ARROW_RANGE)).toFixed(2)
-      a.root.style.transform = `translate(${x}px, ${y}px) rotate(${Math.atan2(dy, dx)}rad)`
+      // Perto da borda de cima o texto vai para baixo da seta, e vice-versa
+      a.label.style.transform = `translate(-50%, ${y < cy ? '20px' : '-38px'})`
+      a.root.style.opacity = Number.isFinite(range) ? (1 - 0.55 * (dist / range)).toFixed(2) : '1'
+      a.root.style.transform = `translate(${x}px, ${y}px)`
+      a.turn.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`
     }
     for (let i = used; i < this.pool.length; i++) this.pool[i].root.hidden = true
   }

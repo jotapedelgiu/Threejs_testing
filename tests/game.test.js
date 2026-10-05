@@ -19,7 +19,7 @@ import { newRoomCode, normalizeCode, cleanName, hostOf, CODE_LENGTH } from '../s
 import { TireWalls, placeTireWalls, prepareTireWall } from '../src/tireWalls.js'
 import { distanceToSegment } from '../src/collision.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from '../src/spawns.js'
-import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ambushStrikes, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME, storeTimeFor } from '../src/ultimate.js'
+import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileShot, ambushStrikes, ULTIMATES, ULT_KINDS, ULT_INTERVAL, ULT_WARNING, ULT_COOLDOWN, ULT_STORE_TIME, ULT_ITEMS, storeTimeFor } from '../src/ultimate.js'
 import { levelFor, damageToLevelUp, damageScale, scaleDamage, maxHealthFor, MAX_LEVEL, xpForHit, xpForKill, xpForAssist, repeatScale, XP_EXTRA } from '../src/progression.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
 import { BotBrain, BOT_SKILLS, headingTo, pathClear } from '../src/bots.js'
@@ -701,29 +701,76 @@ describe('Ultimate', () => {
     assert.equal(d.phase, 'warning', 'aviso nos últimos 10 s')
     run(d, ULT_WARNING)
     assert.equal(d.phase, 'available')
-    assert.equal(d.kind, 'overcharge')
-    assert.ok(d.claim('ana'))
+    assert.equal(d.claimable().length, ULT_ITEMS, 'dois itens ao mesmo tempo')
+    const [first, second, third] = d.claimable()
+    assert.equal(first.kind, 'overcharge')
+    assert.equal(new Set([first.kind, second.kind, third.kind]).size, 3, 'de tipos diferentes')
+    assert.equal(new Set([first, second, third].map((i) => `${i.x},${i.z}`)).size, 3, 'em lugares diferentes')
+    assert.ok(d.claim('ana', 0))
     assert.deepEqual(d.given, { n: 0, owner: 'ana', kind: 'overcharge' })
-    assert.ok(!d.claim('beto'), 'um item, um dono')
+    assert.ok(!d.claim('beto', 0), 'um item, um dono')
     assert.equal(d.phase, 'waiting')
     assert.equal(d.n, 1)
-    assert.ok(d.timer > ULT_INTERVAL - 1, 'o próximo vem um intervalo depois de pegarem')
+    assert.ok(d.timer > ULT_INTERVAL - 1, 'o próximo vem um intervalo depois do primeiro que pegarem')
+    assert.equal(d.claimable().length, 2, 'os outros continuam lá')
+    assert.ok(d.claim('beto', 1), 'e dá para pegar depois')
+    assert.deepEqual(d.given, { n: 1, owner: 'beto', kind: second.kind })
+    assert.ok(d.claim('cadu', 2))
+    assert.equal(d.claimable().length, 0)
+    assert.equal(d.timer > ULT_INTERVAL - 1, true, 'pegar o segundo não reinicia a espera')
+  })
+
+  test('o item que sobrou some quando o próximo aviso começa', () => {
+    const d = new UltimateDirector(() => 0)
+    run(d, ULT_INTERVAL + 1)
+    d.claim('ana', 0)
+    run(d, ULT_INTERVAL - ULT_WARNING + 0.5)
+    assert.equal(d.phase, 'warning')
+    assert.equal(d.claimable().length, 0, 'no aviso os itens ainda não têm tipo')
+    assert.ok(!d.claim('beto', 1))
   })
 
   test('o item aparece num lugar sorteado (sempre outro) e todos veem o mesmo', () => {
-    const spots = [{ x: -10, z: 4 }, { x: 12, z: -6 }, { x: 3, z: 9 }]
+    const spots = [{ x: -10, z: 4 }, { x: 12, z: -6 }, { x: 3, z: 9 }, { x: -4, z: -8 }, { x: 8, z: 8 }, { x: -9, z: -3 }, { x: 0, z: 0 }]
     let i = 0
-    const host = new UltimateDirector(() => [0, 0, 0.5, 0.99][i++ % 4]), guest = new UltimateDirector()
+    const host = new UltimateDirector(() => [0, 0, 0.5, 0.99, 0.3][i++ % 5]), guest = new UltimateDirector()
     const seen = []
     for (let n = 0; n < 4; n++) {
       for (let t = 0; t < ULT_INTERVAL + 1 && host.phase !== 'available'; t += 0.1) host.update(0.1, true, spots)
-      assert.ok(spots.some((p) => p.x === host.x && p.z === host.z), 'um dos lugares da lista')
+      const places = host.claimable().map((p) => `${p.x},${p.z}`)
+      assert.equal(places.length, ULT_ITEMS)
+      assert.ok(host.claimable().every((p) => spots.some((q) => q.x === p.x && q.z === p.z)), 'dos lugares da lista')
+      assert.equal(new Set(places).size, ULT_ITEMS, 'lugares diferentes entre si')
       assert.ok(guest.apply(host.snapshot()))
-      assert.deepEqual([guest.x, guest.z], [host.x, host.z], 'o convidado vê o mesmo lugar')
-      seen.push(`${host.x},${host.z}`)
-      host.claim('ana')
+      assert.deepEqual(guest.claimable(), host.claimable(), 'o convidado vê os mesmos itens')
+      seen.push(places)
+      host.claim('ana', 0)
+      host.claim('beto', 1)
+      host.claim('cadu', 2)
     }
-    assert.ok(seen.every((p, k) => k === 0 || p !== seen[k - 1]), 'nunca repete o lugar anterior em seguida')
+    assert.ok(seen.every((p, k) => k === 0 || p.every((x) => !seen[k - 1].includes(x))), 'nunca repete os lugares do ciclo anterior')
+  })
+
+  test('os itens ficam longe uns dos outros', () => {
+    // Grade 5 x 3: o primeiro é o canto (-20,-10); os outros, os mais distantes dele e entre si
+    const spots = []
+    for (const z of [-10, 0, 10]) for (const x of [-20, -10, 0, 10, 20]) spots.push({ x, z })
+    const d = new UltimateDirector(() => 0)
+    run(d, ULT_INTERVAL + 1, true)
+    d.reset()
+    for (let t = 0; t < ULT_INTERVAL + 1; t += 0.1) d.update(0.1, true, spots)
+    const items = d.claimable()
+    assert.equal(items.length, ULT_ITEMS)
+    const gaps = []
+    for (let a = 0; a < items.length; a++) for (let b = a + 1; b < items.length; b++) gaps.push(Math.hypot(items[a].x - items[b].x, items[a].z - items[b].z))
+    assert.ok(Math.min(...gaps) >= 20, `distâncias entre os itens: ${gaps.map((g) => g.toFixed(0))}`)
+  })
+
+  test('poucos lugares (só o centro): os itens ficam lado a lado, sem se sobrepor', () => {
+    const d = new UltimateDirector(() => 0)
+    run(d, ULT_INTERVAL + 1)
+    const items = d.claimable()
+    assert.equal(new Set(items.map((i) => `${i.x},${i.z}`)).size, ULT_ITEMS)
   })
 
   test('só o anfitrião muda de fase; os outros seguem o estado dele', () => {
@@ -731,7 +778,7 @@ describe('Ultimate', () => {
     run(guest, ULT_INTERVAL + 5, false)
     assert.equal(guest.phase, 'waiting', 'convidado não decide sozinho')
     run(host, ULT_INTERVAL + 1)
-    host.claim('ana')
+    host.claim('ana', 0)
     assert.ok(guest.apply(host.snapshot()))
     assert.equal(guest.given.owner, 'ana')
     assert.ok(!guest.apply({ ...host.snapshot(), n: -1 }), 'ciclo velho é ignorado')
@@ -801,13 +848,20 @@ describe('Ultimate', () => {
   })
 
   test('mensagens do ultimate validadas', () => {
-    assert.ok(validators.ult({ n: 2, phase: 'available', kind: 'overcharge', left: 0, given: null }))
-    const withGiven = validators.ult({ n: 3, phase: 'waiting', kind: null, left: 60, given: { n: 2, owner: 'abc', kind: 'overcharge' } })
+    assert.ok(validators.ult({ n: 2, phase: 'available', left: 0, items: [{ x: 1, z: 2, kind: 'overcharge' }, null], given: null }))
+    assert.equal(validators.ult({ n: 2, phase: 'available', left: 0, items: [{ x: 1, z: 2, kind: 'overcharge' }, null] }).items[1], null)
+    assert.equal(validators.ult({ n: 2, phase: 'available', left: 0, items: [{ x: 1, z: 2, kind: 'overcharge' }, { x: 1, z: 2, kind: 'missile' }, { x: 0, z: 0, kind: 'missile' }, { x: 5, z: 5, kind: 'missile' }] }), null, 'itens demais')
+    assert.equal(validators.ult({ n: 2, phase: 'available', left: 0, items: [{ x: NaN, z: 2, kind: 'overcharge' }] }), null)
+    assert.equal(validators.ult({ n: 2, phase: 'available', left: 0, items: [null, null] }), null, 'disponível sem nenhum item')
+    const withGiven = validators.ult({ n: 3, phase: 'waiting', left: 60, items: [], given: { n: 2, owner: 'abc', kind: 'overcharge' } })
     assert.deepEqual(withGiven.given, { n: 2, owner: 'abc', kind: 'overcharge' })
     assert.equal(validators.ult({ n: 3, phase: 'waiting', left: 60, given: { n: 2, owner: 'abc', kind: 'hackeado' } }), null)
-    assert.equal(validators.ult({ n: 2, phase: 'available', kind: 'hackeado', left: 0 }), null, 'tipo desconhecido')
+    assert.equal(validators.ult({ n: 2, phase: 'available', left: 0, items: [{ x: 0, z: 0, kind: 'hackeado' }] }), null, 'tipo desconhecido')
     assert.equal(validators.ult({ n: 2, phase: 'taken', left: 0 }), null)
-    assert.deepEqual(validators.ultreq({ n: 3, op: 'claim' }), { n: 3, op: 'claim' })
+    assert.deepEqual(validators.ultreq({ n: 3, op: 'claim' }), { n: 3, op: 'claim', i: 0 })
+    assert.deepEqual(validators.ultreq({ n: 3, op: 'claim', i: 1 }), { n: 3, op: 'claim', i: 1 })
+    assert.deepEqual(validators.ultreq({ n: 3, op: 'claim', i: 2 }), { n: 3, op: 'claim', i: 2 })
+    assert.equal(validators.ultreq({ n: 3, op: 'claim', i: 7 }), null)
     assert.equal(validators.ultreq({ n: 3, op: 'roubar' }), null)
     const hit = validators.hit({ target: 'x', ix: 1, iz: 0, damage: 5, stun: 99, zap: true })
     assert.equal(hit.stun, 3, 'atordoamento limitado')

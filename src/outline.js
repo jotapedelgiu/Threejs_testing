@@ -15,6 +15,11 @@ import { Bloom, bloomOptions } from './bloom.js'
 //    contra o fundo ou um braço na frente do tronco geram.
 // 4. Opcional: FXAA na imagem final, para suavizar o serrilhado do contorno.
 // 5. Opcional: bloom (bloom.js) somado por cima da imagem final.
+//
+// Destaque: objetos marcados com `highlight()` (o meu carro) vão para a camada 1
+// e são desenhados num segundo passe no mesmo alvo de normais, com alfa 0,5 (o
+// resto fica com 1). O contorno lê esse alfa no vizinho mais perto: se for o
+// carro marcado, a linha sai na cor de destaque em vez de preta.
 
 export const outlineParams = {
   uOutlineColor: { value: new THREE.Color(0x000000) },
@@ -22,6 +27,7 @@ export const outlineParams = {
   uDepthThreshold: { value: 0.001 }, // salto de profundidade relativo (0,1%)
   uNormalEdges: { value: false },    // linhas também em dobras (mudança de normal)
   uNormalThreshold: { value: 0.6 },
+  uHighlightColor: { value: new THREE.Color('#a855f7') }, // contorno do meu carro (mesmo roxo da minha barra de vida)
 }
 
 export const outlineOptions = {
@@ -53,8 +59,14 @@ const edgeShader = {
     uniform float uDepthThreshold;
     uniform bool uNormalEdges;
     uniform float uNormalThreshold;
+    uniform vec3 uHighlightColor;
 
     varying vec2 vUv;
+
+    // O pixel é de um objeto marcado? (alfa 0,5 no alvo de normais)
+    float marked(vec2 uv) {
+      return texture2D(tNormal, uv).a < 0.75 ? 1.0 : 0.0;
+    }
 
     float linearDepth(vec2 uv) {
       float d = texture2D(tDepth, uv).x;
@@ -84,6 +96,7 @@ const edgeShader = {
       float pixelAngle = 2.0 * uTanHalfFov.y / uResolution.y;
 
       float edge = 0.0;
+      float markedEdge = 0.0; // parte da linha cujo vizinho mais perto é o objeto marcado
       // Dois anéis de 8 amostras (raio cheio e meio raio) para linhas grossas
       // não falharem em detalhes finos.
       for (int ring = 1; ring <= 2; ring++) {
@@ -97,7 +110,9 @@ const edgeShader = {
           float rel = (depth - d) / d;
           float grazing = isBackground ? 0.0 : 2.0 * r * pixelAngle * tanV;
           float threshold = uDepthThreshold + grazing;
-          edge = max(edge, smoothstep(threshold, threshold * 1.5, rel));
+          float e = smoothstep(threshold, threshold * 1.5, rel);
+          edge = max(edge, e);
+          markedEdge = max(markedEdge, e * marked(uv));
 
           if (uNormalEdges && d <= depth * (1.0 + uDepthThreshold)) {
             float nd = 1.0 - dot(normal, viewNormal(uv));
@@ -106,7 +121,8 @@ const edgeShader = {
         }
       }
 
-      gl_FragColor = vec4(mix(color.rgb, uOutlineColor, edge), 1.0);
+      vec3 line = mix(uOutlineColor, uHighlightColor, edge > 0.0 ? clamp(markedEdge / edge, 0.0, 1.0) : 0.0);
+      gl_FragColor = vec4(mix(color.rgb, line, edge), 1.0);
       // Sai sempre em sRGB: o FXAA precisa da imagem já em espaço de tela
       // (perceptual) para medir o contraste, e a tela também espera sRGB.
       gl_FragColor = sRGBTransferOETF(gl_FragColor);
@@ -128,6 +144,9 @@ export class ScreenOutline {
       depthTexture: new THREE.DepthTexture(1, 1),
     })
     this.normalMaterial = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide })
+    // Igual, mas com alfa 0,5 (sem mistura, para gravar o alfa de verdade): marca os pixels do destaque
+    this.markMaterial = new THREE.MeshNormalMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0.5, blending: THREE.NoBlending })
+    this.highlighted = []
     // Objetos sem superfície (ex.: faíscas em linha) ficam fora do passe de
     // normais/profundidade: não ganham contorno nem escondem o que está atrás
     this.skipInNormalPass = []
@@ -199,9 +218,20 @@ export class ScreenOutline {
     u.uPixelRatio.value = this.renderer.getPixelRatio()
   }
 
+  /**
+   * Marca um objeto (e seus filhos) para ter o contorno na cor de destaque.
+   * Ele passa a ficar só na camada 1; a câmera enxerga as duas no passe de cor.
+   */
+  highlight(object) {
+    object.traverse((o) => o.layers.set(1))
+    this.highlighted.push(object)
+  }
+
   render() {
     const { renderer, scene, camera } = this
     this.syncColorTarget()
+    const marking = this.highlighted.length > 0
+    camera.layers.enableAll() // cor: tudo (inclusive o destacado, e as sombras dele)
     const u = this.quad.material.uniforms
     u.cameraNear.value = camera.near
     u.cameraFar.value = camera.far
@@ -218,7 +248,17 @@ export class ScreenOutline {
     const skipped = this.skipInNormalPass.filter((o) => o.visible)
     for (const o of skipped) o.visible = false
     renderer.setRenderTarget(this.normalTarget)
+    if (marking) camera.layers.set(0) // sem o destacado
     renderer.render(scene, camera)
+    if (marking) {
+      // Só o destacado, por cima (mesma profundidade), com o alfa de marca
+      camera.layers.set(1)
+      scene.overrideMaterial = this.markMaterial
+      renderer.autoClear = false
+      renderer.render(scene, camera)
+      renderer.autoClear = true
+      camera.layers.enableAll()
+    }
     for (const o of skipped) o.visible = true
     scene.overrideMaterial = null
     scene.background = background
