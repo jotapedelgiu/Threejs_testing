@@ -8,6 +8,10 @@ import { validators } from './protocol.js'
 
 // Identificador único do app: só se encontram peers com o mesmo appId
 const APP_ID = 'jotapedelgiu-threejs-testing-batebate'
+// Em quantos relays a sala é anunciada (padrão do Trystero: 5). São relays
+// pequenos; se a rede de alguém não alcança os 5, ninguém se encontra. Os 5
+// primeiros continuam os mesmos, então versões antigas ainda se acham.
+const RELAY_REDUNDANCY = 12
 
 // Liga o recebimento de uma ação ao handler, validando antes
 function listen(action, validate, handler) {
@@ -39,7 +43,7 @@ function listen(action, validate, handler) {
  * }} handlers
  */
 export function joinArena(roomId, handlers) {
-  const room = joinRoom({ appId: APP_ID }, roomId)
+  const room = joinRoom({ appId: APP_ID, relayConfig: { redundancy: RELAY_REDUNDANCY } }, roomId)
   const stateAction = room.makeAction('state')
   // Batida anunciada por quem bateu: empurrão (ix, iz) e dano que `target`
   // deve receber
