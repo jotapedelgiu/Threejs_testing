@@ -9,8 +9,13 @@ import { ControlPanel } from './panel.js'
 import { ScoreUI, PlayerHud, CarTags, ItemArrows, UltimateBanner, MatchClock, KillFeed } from './hud.js'
 import { buildStats, buildReport, LevelTimer, XpTimeline } from './matchStats.js'
 import { KillTracker, MATCH_TIME, tallyDealtByLevel, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock } from './match.js'
+import { StateSender } from './netSend.js'
+import { packMove } from './netPack.js'
+import { BotBroadcaster, applyBotList } from './botBroadcast.js'
 import { StreakTracker, xpForStreak, streakName } from './streaks.js'
 import { levelFor, levelProgress, damageScale, scaleDamage, maxHealthFor, xpForHit, xpForKill, xpForAssist, repeatScale } from './progression.js'
+import { createHealZone } from './healZone.js'
+import { createMatchFlow } from './matchFlow.js'
 import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
 import { readDriveInput, isDown, wasPressed } from './input.js'
@@ -22,6 +27,7 @@ import { Orbs, orbCountFor } from './orbs.js'
 import { SparkEffects, findPoleTip } from './sparks.js'
 import { buildFunnyCar } from './shapes.js'
 import { SpikedBats, extractProp, placeBats } from './bats.js'
+import { mergeByMaterial } from './mergeStatic.js'
 import { TireWalls, placeTireWalls, prepareTireWall } from './tireWalls.js'
 import { spawnPoints, cornerPoints, cornerIndex, chooseRespawn, yawToCenter } from './spawns.js'
 import { distanceToSegment } from './collision.js'
@@ -91,7 +97,16 @@ const savedSettings = fetch(SETTINGS_URL, { cache: 'no-store' })
   .catch(() => null)
 
 // --- Renderer, cena, câmera -------------------------------------------------
-const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('scene'), antialias: true })
+// Todo o 3D vai para render targets (outline.js); o canvas só recebe quads de tela
+// cheia. Então MSAA, buffer de profundidade e stencil do canvas não servem para
+// nada (só gastam memória e um resolve por quadro). powerPreference pede a GPU
+// dedicada em notebooks com duas placas.
+const renderer = new THREE.WebGLRenderer({
+  canvas: document.getElementById('scene'),
+  antialias: false, depth: false, stencil: false,
+  powerPreference: 'high-performance',
+})
+renderer.info.autoReset = false // há vários renderer.render por quadro; zerado à mão (contador do ?fps)
 // Qualidade (pasta Desempenho no painel). Resolução: em telas de alta
 // densidade (notebook com zoom de 150%, 4K) o pós-processamento roda em muito
 // mais pixels; limitar a 1,5 alivia bastante com pouca diferença visual.
@@ -218,6 +233,10 @@ const netStatus = document.getElementById('net-status')
 const fpsMeter = new Stats()
 fpsMeter.dom.style.cssText = 'position:fixed;left:24px;top:auto;bottom:150px;z-index:10;cursor:pointer'
 document.body.append(fpsMeter.dom)
+// Draw calls e triângulos do quadro todo (todos os passes): para comparar otimizações
+const drawStats = document.createElement('div')
+drawStats.style.cssText = 'position:fixed;left:24px;bottom:132px;z-index:10;font:10px monospace;color:#0f0;background:#002;padding:2px 4px;pointer-events:none'
+document.body.append(drawStats)
 
 // --- Estado da partida ---------------------------------------------------------
 const carMaterials = MATERIAL_GROUPS.map(({ name, color, glossiness }) => ({
@@ -226,19 +245,32 @@ const carMaterials = MATERIAL_GROUPS.map(({ name, color, glossiness }) => ({
 }))
 const bodyMaterials = carMaterials.slice(0, 2).map((m) => m.material) // carroceria pintável
 
+// Estado da partida e da sala num lugar só (em vez de `let` soltos no módulo): as regras
+// e a rede leem e escrevem `game.x`, e o que for extraído do main.js recebe `game`.
 // Fases: 'menu' (tela inicial) → 'lobby' (sala de espera) → 'countdown'
-// (3, 2, 1) → 'playing'
-let phase = 'menu'
-let roomCode = ''
-let myName = ''
-let joinedAt = 0        // quando entrei na sala (ms): decide o anfitrião
+// (3, 2, 1) → 'playing' → 'over'
+const game = {
+  phase: 'menu',        
+  roomCode: '',         
+  myName: '',           
+  joinedAt: 0,           // quando entrei na sala (ms): decide o anfitrião
+  countdown: 0,          // s restantes da contagem
+  goTimer: 0,            // s desde o "JÁ!"
+  pendingStart: null,    // partida começou antes do carro terminar de carregar
+  deathSpot: null,       // onde fui nocauteado (renasço longe dali)
+  lastSpawn: null,       // onde nasci da última vez (renasço em outro lugar)
+  matchLeft: MATCH_TIME, // s até acabar
+  matchResend: 0,        // anfitrião: reenvia o relógio de tempos em tempos
+  playTime: 0,           // s de partida valendo (sem a contagem)
+  myLevel: 1,           
+  boosts: 0,            
+  stunUntil: 0,          // atordoado (sem dirigir) até este instante da simulação
+  boostedUntil: 0,      
+  blastUntil: 0,         // idem, depois da Onda de choque (aí os pneus também doem)
+  slowUntil: 0,          // lento até este instante da simulação
+}
 const roster = new Map() // peerId -> { name, since, phase } (de cada 'hello')
-let countdown = 0       // s restantes da contagem
-let goTimer = 0         // s desde o "JÁ!"
-let pendingStart = null // partida começou antes do carro terminar de carregar
-let deathSpot = null    // onde fui nocauteado (renasço longe dali)
-let lastSpawn = null    // onde nasci da última vez (renasço em outro lugar)
-const inMatch = () => phase === 'countdown' || phase === 'playing'
+const inMatch = () => game.phase === 'countdown' || game.phase === 'playing'
 
 let car = null          // meu carrinho (Car)
 let footprint = null    // cápsula de colisão, igual para todos os carrinhos
@@ -248,7 +280,6 @@ let remotes = null      // RemotePlayers
 let net = null          // conexão com a sala
 let livery = null       // minha pintura
 const health = new Health() // minha vida (cada jogador é dono da própria)
-let boosts = 0
 let glowing = null      // brilho aplicado nos materiais: 'boost', 'ult' ou null (dirty flag)
 // Ultimate (ultimate.js): item do centro (o anfitrião decide), meu inventário
 // e meus raios
@@ -258,35 +289,25 @@ const storm = new StormStrikes(ULTIMATES.overcharge)
 let ultClaimed = -1     // ciclo em que já pedi o item (não pede de novo)
 let ultGot = -1         // último item entregue que já vi (anúncio e inventário)
 let ultResend = 0       // anfitrião: reenvia o estado de tempos em tempos
-let stunUntil = 0       // atordoado (sem dirigir) até este instante da simulação
 let ultNews = null      // anúncio rápido na faixa: { title, sub, tone, until }
 // Zona de cura (medkit.js): o anfitrião decide quando e onde aparece; cada
 // um cura a própria vida enquanto está dentro
 const medkit = new MedkitDirector()
 const zoneHeal = new ZoneHealing()
-let medResend = 0       // anfitrião: reenvia o estado de tempos em tempos
 // Partida (match.js): 6 min, ganha quem tiver mais abates. O placar sai do
 // "quem me nocauteou" (koBy) de cada um; o relógio é do anfitrião
 const kills = new KillTracker() // minhas mortes e quem me abateu
 const streaks = new StreakTracker() // abates seguidos sem morrer, de todos (double, triple...)
-let matchLeft = MATCH_TIME      // s até acabar
-let matchResend = 0             // anfitrião: reenvia o relógio de tempos em tempos
 const departed = new Map()      // quem saiu no meio: { name, koBy, deaths } (os números ficam)
 // Progressão (progression.js): o dano causado acumulado sobe o nível (mais
 // dano e mais vida). O nível de todos sai do placar, recalculado a cada passo
 let damageTally = new Map()     // id -> XP ganho
-let myLevel = 1
 const levelTimer = new LevelTimer() // só para o relatório de teste (matchStats.js)
 const xpTimeline = new XpTimeline() // idem: XP ganho minuto a minuto
-let playTime = 0 // s de partida valendo (sem a contagem)
 const levelOf = (id) => levelFor(damageTally.get(id) ?? 0)
-let healShown = 0       // cura acumulada ainda não mostrada ("+N VIDA" a cada 1 s)
-let healPopupTimer = 0
 let netTimer = 0
 // Levei uma batida com boost há pouco: se bater na parede até `until`,
 // perco mais vida
-let boostedUntil = 0
-let blastUntil = 0 // idem, depois da Onda de choque (aí os pneus também doem)
 const hitCooldown = new HitCooldown()
 // Batidas que EU anunciei como agressor (para não aplicar o empurrão do outro
 // por cima, quando os dois se acharam agressores da mesma batida)
@@ -316,6 +337,9 @@ loadCarModel().then(
       return carMaterials[group === -1 ? DEFAULT_GROUP : group].material
     })
 
+    // 15 meshes viram ~4 (um por material): menos draw calls nos 3 passes (mergeStatic.js)
+    if (!ALT_SHAPE) mergeByMaterial(model)
+
     // Centraliza no plano XZ e apoia as rodas no chão (y = 0)
     const box = new THREE.Box3().setFromObject(model)
     const center = box.getCenter(new THREE.Vector3())
@@ -337,7 +361,7 @@ loadCarModel().then(
     // são preparados agora (no menu): senão a primeira imagem da partida
     // trava e o atraso "come" a contagem
     renderer.compile(car.root, camera, scene)
-    if (pendingStart) beginMatch(pendingStart.map, pendingStart.late)
+    if (game.pendingStart) beginMatch(game.pendingStart.map, game.pendingStart.late)
     else refreshLobby()
     // Só agora todos os controles existem; aplica os valores salvos e depois
     // sorteia a pintura (senão o arquivo salvo sobrescreveria as cores)
@@ -392,7 +416,7 @@ function rerollLivery() {
 // --- Rede ----------------------------------------------------------------------------
 function setNetStatus(peerCount) {
   const players = peerCount + 1
-  netStatus.textContent = `Room ${roomCode} · ${players} ${players === 1 ? 'player' : 'players'}`
+  netStatus.textContent = `Room ${game.roomCode} · ${players} ${players === 1 ? 'player' : 'players'}`
 }
 
 // Fui atingido: o empurrão e o dano calculados por quem bateu valem para mim.
@@ -414,9 +438,9 @@ function receiveHit(hit, attackerId, creditId = attackerId) {
     if (ram.echo !== null) net.sendHit({ target: attackerId, ix: 0, iz: 0, damage: ram.echo, mutual: true })
     if (hit.mutual && damage) scoreUI.popup(car.root.position, tierOfDamage(damage), damage)
   }
-  if (hit.boosted) boostedUntil = now + WALL_DAMAGE_WINDOW
-  if (hit.blast) blastUntil = now + WALL_DAMAGE_WINDOW
-  if (hit.stun && !health.isShielded) stunUntil = Math.max(stunUntil, now + hit.stun)
+  if (hit.boosted) game.boostedUntil = now + WALL_DAMAGE_WINDOW
+  if (hit.blast) game.blastUntil = now + WALL_DAMAGE_WINDOW
+  if (hit.stun && !health.isShielded) game.stunUntil = Math.max(game.stunUntil, now + hit.stun)
   if (!hit.mutual) pushChain.pushed(creditId, hit.relay ?? 0, now, hit.ix, hit.iz)
   kills.noteHit(creditId, now) // se eu cair (até de parede/espinho), o abate é dele
   takeDamage(damage, creditId)
@@ -429,19 +453,19 @@ function takeDamage(amount, by = null) {
   const attacker = by ? levelOf(by) : 0
   const repeat = by ? repeatScale(kills.sinceKoBy(by, now)) : 1
   const { dealt, knockedOut } = health.damage(amount)
-  kills.noteTaken(myLevel, dealt)
+  kills.noteTaken(game.myLevel, dealt)
   kills.noteDealt(by, attacker, dealt)
-  kills.noteXp(by, Math.round(xpForHit(dealt, attacker, myLevel) * repeat))
+  kills.noteXp(by, Math.round(xpForHit(dealt, attacker, game.myLevel) * repeat))
   if (knockedOut) {
     scoreUI.popup(car.root.position, 'ko')
     const killRepeat = repeatScale(kills.sinceKoBy(kills.lastHit?.by, now)) // antes de registrar este abate
     const killer = kills.knockedOut(now)
     noteKill(killer, net.selfId)
-    if (killer) kills.noteXp(killer, Math.round((xpForKill(levelOf(killer), myLevel) + xpForStreak(streaks.count(killer))) * killRepeat))
-    if (killer) for (const id of kills.assisters) kills.noteXp(id, Math.round(xpForAssist(levelOf(id), myLevel) * killRepeat))
+    if (killer) kills.noteXp(killer, Math.round((xpForKill(levelOf(killer), game.myLevel) + xpForStreak(streaks.count(killer))) * killRepeat))
+    if (killer) for (const id of kills.assisters) kills.noteXp(id, Math.round(xpForAssist(levelOf(id), game.myLevel) * killRepeat))
     if (killer) killFeed.add(playerName(killer), 'You')
     car.endBoost()
-    deathSpot = { x: car.root.position.x, z: car.root.position.z }
+    game.deathSpot = { x: car.root.position.x, z: car.root.position.z }
   }
 }
 
@@ -456,7 +480,7 @@ function noteKill(killer, victim) {
 
 // Põe o carro num ponto de nascimento, virado para o centro da arena
 function spawnAt(point) {
-  lastSpawn = point
+  game.lastSpawn = point
   car.spawn.set(point.x, 0, point.z)
   car.spawnYaw = yawToCenter(point.x, point.z)
   car.reset()
@@ -469,7 +493,7 @@ function respawn() {
   for (const { car: remote, ko } of remotes.values()) {
     if (remote.hasState && !ko) enemies.push({ x: remote.root.position.x, z: remote.root.position.z })
   }
-  const point = chooseRespawn(spawnSpots, { enemies, death: deathSpot, last: lastSpawn })
+  const point = chooseRespawn(spawnSpots, { enemies, death: game.deathSpot, last: game.lastSpawn })
   if (point) spawnAt(point)
   else car.reset()
 }
@@ -494,10 +518,10 @@ const clockSynced = syncClock()
 
 async function enterRoom(code, name) {
   await clockSynced // relógio errado = relays recusam e ninguém se conecta
-  roomCode = code
-  myName = name
-  joinedAt = Date.now()
-  phase = 'lobby'
+  game.roomCode = code
+  game.myName = name
+  game.joinedAt = Date.now()
+  game.phase = 'lobby'
   // O endereço vira o link de convite (mantém ?painel, ?fps...)
   const params = new URLSearchParams(location.search)
   params.delete('sala')
@@ -508,11 +532,11 @@ async function enterRoom(code, name) {
   refreshLobby()
 }
 
-const hello = () => ({ name: myName, since: joinedAt, phase: inMatch() ? 'playing' : 'lobby' })
+const hello = () => ({ name: game.myName, since: game.joinedAt, phase: inMatch() ? 'playing' : 'lobby' })
 
 function refreshLobby() {
-  if (phase !== 'lobby') return
-  const members = [{ id: net.selfId, name: myName, since: joinedAt, me: true }]
+  if (game.phase !== 'lobby') return
+  const members = [{ id: net.selfId, name: game.myName, since: game.joinedAt, me: true }]
   for (const [id, r] of roster) members.push({ id, name: r.name || 'Player', since: r.since, me: false })
   const host = hostOf(members)
   members.sort((a, b) => a.since - b.since)
@@ -521,7 +545,7 @@ function refreshLobby() {
 
 // Anfitrião apertou "Começar": sorteia o mapa e começa para todos
 function hostStart() {
-  if (phase !== 'lobby' || !car) return
+  if (game.phase !== 'lobby' || !car) return
   const map = newLayout()
   net.sendStart(map)
   beginMatch(map)
@@ -532,10 +556,10 @@ function hostStart() {
 // late = entrei com a partida já rolando
 function beginMatch(map, late = false) {
   if (!car) {
-    pendingStart = { map, late } // ainda carregando o carro: começa assim que terminar
+    game.pendingStart = { map, late } // ainda carregando o carro: começa assim que terminar
     return
   }
-  pendingStart = null
+  game.pendingStart = null
   // Toda partida começa com os controles nos padrões do jogo (código +
   // settings.json); a pintura sorteada continua a mesma
   savedSettings.then((settings) => {
@@ -544,20 +568,20 @@ function beginMatch(map, late = false) {
   })
   adoptLayout(map)
   updateOrbCount()
-  phase = 'countdown'
-  countdown = COUNTDOWN
-  goTimer = 0
+  game.phase = 'countdown'
+  game.countdown = COUNTDOWN
+  game.goTimer = 0
   menu.close()
   scene.add(car.root)
-  deathSpot = null
-  lastSpawn = null
+  game.deathSpot = null
+  game.lastSpawn = null
   ultimate.reset()
   ultSlot.reset()
   storm.reset()
   // Placar e relógio do zero (também em "Play again")
   kills.reset()
   streaks.reset()
-  matchLeft = MATCH_TIME
+  game.matchLeft = MATCH_TIME
   departed.clear()
   for (const p of remotes.values()) {
     p.koBy = {}
@@ -574,25 +598,25 @@ function beginMatch(map, late = false) {
   }
   health.reset()
   damageTally = new Map()
-  myLevel = 1
+  game.myLevel = 1
   levelTimer.reset()
   xpTimeline.reset()
-  playTime = 0
-  boosts = 0
+  game.playTime = 0
+  game.boosts = 0
   ultClaimed = ultGot = -1
   ultNews = null
   medkit.reset()
   zoneHeal.carry = 0
-  stunUntil = 0
+  game.stunUntil = 0
   missiles.length = 0
-  slowUntil = 0
+  game.slowUntil = 0
   if (testMode) {
     spawnAt(TEST_SPAWN) // de frente para os bonecos
     if (!dummies.size) addDummy()
   } else if (late) {
     respawn() // os cantos podem estar ocupados: vai para o lugar mais vazio
   } else {
-    const members = [{ id: net.selfId, since: joinedAt }]
+    const members = [{ id: net.selfId, since: game.joinedAt }]
     for (const [id, r] of roster) if (r.phase === 'lobby' || r.phase === 'playing') members.push({ id, since: r.since })
     spawnAt(corners[cornerIndex(members, net.selfId)])
   }
@@ -608,21 +632,24 @@ function beginMatch(map, late = false) {
 function startMultiplayer() {
   setNetStatus(0)
   // Tudo que chega aqui já foi validado (protocol.js)
-  net = joinArena(`batebate-${roomCode}`, {
+  net = joinArena(`batebate-${game.roomCode}`, {
     onPeersChange: setNetStatus,
     // Os dois se acharam pelos relays mas a conexão direta (WebRTC) não abriu
     onJoinError: (error) => {
-      netStatus.textContent = `Room ${roomCode} · found a player but could not connect (their network may block direct connections)`
+      netStatus.textContent = `Room ${game.roomCode} · found a player but could not connect (their network may block direct connections)`
       console.warn('Multiplayer:', error)
     },
     // Quem chega recebe quem eu sou e, se a partida já começou, o mapa dela e
     // onde estão as esferas (e entra direto na partida)
     onPeerJoin(peerId) {
+      // Quem chegou ainda não tem cores, placar etc.: o próximo estado leva tudo (netSend.js)
+      stateSender.forceFull()
+      botBroadcast.forceFull() // quem chegou recebe todos os bots já
       net.sendHello(hello(), peerId)
       if (inMatch()) net.sendLayout({ ...layout, orbs: orbs.snapshot() }, peerId)
       if (inMatch() && amHost()) net.sendUlt(ultimate.snapshot(), peerId)
       if (inMatch() && amHost()) net.sendMedkit(medkit.snapshot(), peerId)
-      if (inMatch() && amHost()) net.sendMatch({ left: matchLeft, over: phase === 'over' }, peerId)
+      if (inMatch() && amHost()) net.sendMatch({ left: game.matchLeft, over: game.phase === 'over' }, peerId)
     },
     // Ultimate: o estado vem do anfitrião; pedidos só o anfitrião atende
     onUlt(state) {
@@ -647,16 +674,16 @@ function startMultiplayer() {
       updateOrbCount()
     },
     onStart(map) {
-      if (phase === 'lobby' || phase === 'over') beginMatch(map) // "Play again" também
+      if (game.phase === 'lobby' || game.phase === 'over') beginMatch(map) // "Play again" também
     },
     // Relógio da partida: vale o do anfitrião
     onMatch(clock) {
-      if (phase !== 'playing' || amHost()) return
+      if (game.phase !== 'playing' || amHost()) return
       if (clock.over) endMatch()
-      else if (Math.abs(clock.left - matchLeft) > 0.5) matchLeft = clock.left
+      else if (Math.abs(clock.left - game.matchLeft) > 0.5) game.matchLeft = clock.left
     },
     onLayout(theirs) {
-      if (phase === 'lobby') {
+      if (game.phase === 'lobby') {
         // Cheguei com a partida rolando: entro nela
         beginMatch(theirs, true)
       } else if (shouldAdopt(layout, theirs)) {
@@ -709,20 +736,14 @@ function startMultiplayer() {
       if (hit.target === net.selfId && inMatch()) receiveHit(hit, attackerId, creditId)
     },
     // Bots da partida: o estado vem do anfitrião, como o de um jogador
-    onBots({ list }, peerId) {
+    onBots({ list, complete }, peerId) {
       if (!inMatch() || testMode || peerId !== hostId()) return
       if (botsHost !== peerId) clearMatchBots() // anfitrião novo: relógio novo, histórico novo
       botsHost = peerId
-      const ids = new Set(list.map((b) => b.id))
-      for (const id of netBots.keys()) {
-        if (ids.has(id)) continue
-        netBots.delete(id)
-        remotes?.remove(id)
-      }
-      for (const { id, name, kind, state } of list) {
-        netBots.set(id, { name, kind })
-        handlePeerState(id, state)
-      }
+      // A lista só traz os bots que mudaram; a completa (a cada 0,5 s) diz quem saiu
+      const { removed, updates } = applyBotList(netBots, list, complete)
+      for (const id of removed) remotes?.remove(id)
+      for (const { id, state } of updates) handlePeerState(id, state)
     },
     // Alguém bateu na parede depois de levar um boost (o dano já foi
     // descontado por ele; aqui é só para mostrar)
@@ -767,18 +788,18 @@ function handlePeerState(peerId, state) {
 
 // Só no `npm run dev`: acesso pelo console do navegador para depuração
 function exposeDebug() {
-  if (import.meta.env.DEV) window.__game = { kills, match: { get left() { return matchLeft }, set left(v) { matchLeft = v } }, launchMissile, missiles, get boosts() { return boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return phase } }
+  if (import.meta.env.DEV) window.__game = { game, kills, match: { get left() { return game.matchLeft }, set left(v) { game.matchLeft = v } }, launchMissile, missiles, get boosts() { return game.boosts }, medkit, dummies, ultimate, ultSlot, get stunned() { return loop.simTime < game.stunUntil }, net, get car() { return car }, get bats() { return bats }, get tireWalls() { return tireWalls }, health, get remotes() { return remotes }, orbs, loop, sparks, camera, renderer, outline, scene, menu, roster, toonGlobals, get phase() { return game.phase } }
 }
 
 // --- Regras da partida (rodam no passo fixo) -------------------------------------
 function updateBoost() {
   // Pegar esfera (com o inventário cheio, passa direto e ela fica lá)
-  if (boosts < MAX_BOOSTS) {
+  if (game.boosts < MAX_BOOSTS) {
     const slot = orbs.findPickup(car.root.position)
     if (slot) {
       const gen = slot.gen
       orbs.take(slot.index, gen)
-      boosts++
+      game.boosts++
       net?.sendPickup({ slot: slot.index, gen })
       scoreUI.popup(car.root.position, 'pickup')
     }
@@ -786,8 +807,8 @@ function updateBoost() {
   // Usar boost
   // Com ultimate na mão (guardado ou em uso), o boost fica travado: os dois
   // juntos davam nocaute garantido. As esferas continuam indo para o estoque
-  if (wasPressed('Space') && boosts > 0 && !car.isBoosting && !boostLocked()) {
-    boosts--
+  if (wasPressed('Space') && game.boosts > 0 && !car.isBoosting && !boostLocked()) {
+    game.boosts--
     car.boost()
   }
 }
@@ -808,9 +829,9 @@ function collideWalls(simTime) {
 function hitWall(normal, depth, simTime, tires = false, index = -1) {
   const wallSpeed = car.hitWall(normal, depth)
   if (tires) tireWalls.kick(index, -normal.x, -normal.z, wallSpeed)
-  const combo = tires ? simTime < blastUntil : simTime < boostedUntil
+  const combo = tires ? simTime < game.blastUntil : simTime < game.boostedUntil
   if (combo && wallSpeed >= WALL_DAMAGE_MIN_SPEED) {
-    boostedUntil = blastUntil = 0 // o dano extra conta uma vez só
+    game.boostedUntil = game.blastUntil = 0 // o dano extra conta uma vez só
     net?.sendWall({ damage: WALL_DAMAGE })
     scoreUI.popup(car.root.position, 'wall', WALL_DAMAGE)
     takeDamage(WALL_DAMAGE)
@@ -905,8 +926,8 @@ function collideCars(simTime, wallTime) {
     const chain = boosted || evenTie ? null : pushChain.ricochet(peerId, simTime, -hit.normal.x, -hit.normal.z)
     // Empate: a média dos dois níveis, para o dano ser o mesmo para os dois
     const base = chain ? chainDamage(scaleDamage(DAMAGE[tier] ?? 0, levelOf(chain.owner)), chain.relay)
-      : evenTie ? Math.round((scaleDamage(DAMAGE[tier] ?? 0, myLevel) + scaleDamage(DAMAGE[tier] ?? 0, levelOf(peerId))) / 2)
-      : scaleDamage(DAMAGE[tier] ?? 0, myLevel)
+      : evenTie ? Math.round((scaleDamage(DAMAGE[tier] ?? 0, game.myLevel) + scaleDamage(DAMAGE[tier] ?? 0, levelOf(peerId))) / 2)
+      : scaleDamage(DAMAGE[tier] ?? 0, game.myLevel)
     let damage = immune || !tier ? 0 : base
     let mutual = false
     if (!dummy && iAmLower && !chain) {
@@ -926,11 +947,14 @@ function collideCars(simTime, wallTime) {
   }
 }
 
+const stateSender = new StateSender() // só manda o que mudou (netSend.js)
+const botBroadcast = new BotBroadcaster() // anfitrião: um StateSender por bot (botBroadcast.js)
+
 function sendState(dt, simTime) {
   netTimer += dt
   if (netTimer < NET_SEND_INTERVAL) return
   netTimer %= NET_SEND_INTERVAL
-  net.sendState({
+  const out = stateSender.build({
     ...car.getNetState(),
     t: simTime,
     colors: readColors(bodyMaterials),
@@ -947,7 +971,12 @@ function sendState(dt, simTime) {
     xpBy: kills.xpBy,
     // Só para o relatório de partida (matchStats.js): pesa na mensagem, então só no dev
     ...(import.meta.env.DEV ? { dmgBy: kills.dmgBy, dmgTaken: kills.dmgTaken } : {}),
-  })
+  }, simTime)
+  if (!out) return
+  // Estado enxuto (quase sempre) vai em binário; o completo, em JSON
+  const packed = out.full ? null : packMove(out.state)
+  if (packed) net.sendMove(packed)
+  else net.sendState(out.state)
 }
 
 // --- Campo de testes -------------------------------------------------------------------
@@ -958,10 +987,10 @@ const dummies = new Map() // id -> TrainingDummy
 
 function enterTestRange(name) {
   testMode = true
-  myName = name
-  joinedAt = Date.now()
-  roomCode = 'TESTE'
-  phase = 'lobby'
+  game.myName = name
+  game.joinedAt = Date.now()
+  game.roomCode = 'TESTE'
+  game.phase = 'lobby'
   net = localNet(hitDummy) // nada sai do computador; batidas vão para os bonecos
   netStatus.textContent = 'Practice range · solo'
   new TestPanel({
@@ -996,7 +1025,7 @@ function enterTestRange(name) {
         health.koTimer = 0
       },
       hurt: () => takeDamage(30),
-      fillBoosts: () => (boosts = MAX_BOOSTS),
+      fillBoosts: () => (game.boosts = MAX_BOOSTS),
       exit: () => location.assign(location.pathname),
       endMatch: () => endMatch(),
     },
@@ -1072,7 +1101,7 @@ let botsHost = null       // de quem vêm os bots que estou vendo
 let botsTimer = 0
 
 function hostId() {
-  const members = [{ id: net.selfId, since: joinedAt }]
+  const members = [{ id: net.selfId, since: game.joinedAt }]
   for (const [id, r] of roster) members.push({ id, since: r.since })
   return hostOf(members)
 }
@@ -1114,9 +1143,13 @@ function updateMatchBots(dt, simTime, wallTime) {
   botsTimer += dt
   if (botsTimer < NET_SEND_INTERVAL) return
   botsTimer %= NET_SEND_INTERVAL
-  const list = []
-  for (const d of dummies.values()) if (d.isBot) list.push({ id: d.id, name: d.name, kind: d.brain.kind, state: d.state(simTime, import.meta.env.DEV) })
-  net.sendBots({ list })
+  // Só vão os bots que os outros não conseguem prever (botBroadcast.js)
+  const bots = []
+  for (const d of dummies.values()) if (d.isBot) bots.push({ id: d.id, name: d.name, kind: d.brain.kind, state: d.state(simTime, import.meta.env.DEV) })
+  const out = botBroadcast.build(bots, simTime)
+  if (!out) return
+  if (out.packed) net.sendBotMoves(out.packed)
+  else net.sendBots(out.message)
 }
 
 // Bot contra os outros jogadores (o meu carro já é tratado em collideCars).
@@ -1233,7 +1266,7 @@ function driveBot(bot, world, dt, simTime) {
       scoreUI.popup(bot.car.root.position, 'pickup')
     }
   }
-  if (phase !== 'playing') return NO_INPUT
+  if (game.phase !== 'playing') return NO_INPUT
   claimUltForBot(bot)
   // Atordoado, ou lançando a Onda de choque: parado
   if (simTime < bot.stunUntil || bot.ult.active === 'shockwave') return NO_INPUT
@@ -1366,7 +1399,7 @@ function updateDummies(dt, simTime) {
   const list = [...dummies.values()]
   const world = list.some((d) => d.isBot) ? botWorld() : null
   for (const d of list) {
-    if (d.isBot && phase === 'playing') updateBotUltimate(d, dt)
+    if (d.isBot && game.phase === 'playing') updateBotUltimate(d, dt)
     const input = d.isBot ? driveBot(d, world, dt, simTime) : NO_INPUT
     if (d.update(dt, input) && d.isBot) placeBot(d)
     if (d.health.isKO) continue
@@ -1489,7 +1522,7 @@ function dummyHitsMe(d, normal, impact, simTime) {
   d.brain?.noteHit(net.selfId)
   if (boosted) {
     d.car.endBoost()
-    boostedUntil = simTime + WALL_DAMAGE_WINDOW
+    game.boostedUntil = simTime + WALL_DAMAGE_WINDOW
   }
   const tier = boosted ? 'turbo' : impactTier(impact)
   if (!tier || health.isShielded) return
@@ -1564,7 +1597,6 @@ function ultTargets() {
 // atirou. Lista: { shot, owner }
 const missiles = []
 const missileShots = [] // só os MissileShot, para o desenho (reaproveitada)
-let slowUntil = 0       // lento até este instante da simulação
 let missileShotsLeft = 0 // mísseis que faltam na rajada
 let missileClock = 0     // s até o próximo
 let missilesFired = 0   // vai no estado do carro: os outros lançam um a cada aumento
@@ -1586,7 +1618,7 @@ function updateMissiles(dt, simTime) {
         botUltHit(bot, h.id, { ix: h.dx * h.push, iz: h.dz * h.push, damage: scaleDamage(h.damage, levelOf(bot.id)), boosted: false, rocket: true }, 'rocket')
         continue
       }
-      const damage = scaleDamage(h.damage, myLevel)
+      const damage = scaleDamage(h.damage, game.myLevel)
       net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage, boosted: false, rocket: true })
       scoreUI.popup(remotes.get(h.id).car.root.position, 'rocket', damage)
     }
@@ -1604,9 +1636,9 @@ function updateMissiles(dt, simTime) {
   // Em cima do rastro de outro: lento (e mais um pouco depois de sair)
   const pos = car.root.position
   const onTrail = !health.isKO && missiles.some((m) => m.owner !== mine && m.shot.trailContains(pos.x, pos.z))
-  const wasSlow = simTime < slowUntil
-  if (onTrail) slowUntil = simTime + ULTIMATES.missile.slowLinger
-  const slow = simTime < slowUntil
+  const wasSlow = simTime < game.slowUntil
+  if (onTrail) game.slowUntil = simTime + ULTIMATES.missile.slowLinger
+  const slow = simTime < game.slowUntil
   car.speedScale = slow ? ULTIMATES.missile.slow : 1
   if (slow && !wasSlow) scoreUI.popup(pos, 'slow')
 }
@@ -1700,7 +1732,7 @@ function updateUltimate(dt, stunned) {
   // Onda de choque: a frente anda pela faixa e acerta quem estiver nela
   if (shockCast) {
     for (const h of shockCast.update(dt, ultTargets())) {
-      const damage = scaleDamage(h.damage, myLevel)
+      const damage = scaleDamage(h.damage, game.myLevel)
       net.sendHit({ target: h.id, ix: h.dx * h.push, iz: h.dz * h.push, damage, boosted: true, blast: true })
       scoreUI.popup(remotes.get(h.id).car.root.position, 'blast', damage)
     }
@@ -1712,7 +1744,7 @@ function updateUltimate(dt, stunned) {
   for (const s of storm.update(dt, pos.x, pos.z, ultTargets())) {
     const target = remotes.get(s.id)
     const push = storm.spec.push
-    const damage = scaleDamage(s.damage, myLevel)
+    const damage = scaleDamage(s.damage, game.myLevel)
     net.sendHit({ target: s.id, ix: s.dx * push, iz: s.dz * push, damage, boosted: false, stun: s.stun, zap: true })
     ultView.bolt(tmpBoltFrom.copy(pos).setY(2.6), tmpBoltTo.copy(target.car.root.position).setY(0.8))
     scoreUI.popup(target.car.root.position, s.stun ? 'stun' : 'zap', damage)
@@ -1725,9 +1757,9 @@ function slamAmbush() {
   const spec = ULTIMATES.ambush
   const pos = car.root.position
   for (const h of ambushStrikes(spec, pos.x, pos.z, ultTargets())) {
-    const damage = scaleDamage(h.damage, myLevel)
+    const damage = scaleDamage(h.damage, game.myLevel)
     net.sendHit({ target: h.id, ix: 0, iz: 0, damage, boosted: false, stun: h.stun, slam: true })
-    if (damage) scoreUI.popup(remotes.get(h.id).car.root.position, tierOfDamage(damage, damageScale(myLevel)), damage)
+    if (damage) scoreUI.popup(remotes.get(h.id).car.root.position, tierOfDamage(damage, damageScale(game.myLevel)), damage)
   }
   showSlam(pos)
 }
@@ -1828,7 +1860,7 @@ function renderUltimate(dt) {
     }
   }
   remotes.updateGlow(pulse)
-  playerHud.health.root.classList.toggle('stunned', loop.simTime < stunUntil)
+  playerHud.health.root.classList.toggle('stunned', loop.simTime < game.stunUntil)
 
   // Faixa no topo: anúncio recente > meu poder > poder de outro > item do centro
   const now = performance.now()
@@ -1851,73 +1883,41 @@ function renderUltimate(dt) {
   }
 }
 
+// Ponte para os módulos extraídos: lê (e, onde precisa, grava) o que ainda mora neste arquivo.
+// Getters preguiçosos: valem para `let` reatribuídos e para o que é declarado mais abaixo.
+const ctx = {
+  get GO_SHOW_TIME() { return GO_SHOW_TIME },
+  get amHost() { return amHost },
+  get announce() { return announce },
+  get beginMatch() { return beginMatch },
+  get car() { return car },
+  get damageTally() { return damageTally },
+  set damageTally(v) { damageTally = v },
+  get departed() { return departed },
+  get dummies() { return dummies },
+  get game() { return game },
+  get health() { return health },
+  get inMatch() { return inMatch },
+  get kills() { return kills },
+  get levelOf() { return levelOf },
+  get levelTimer() { return levelTimer },
+  get medkit() { return medkit },
+  get medkitSpots() { return medkitSpots },
+  get menu() { return menu },
+  get net() { return net },
+  get netBots() { return netBots },
+  get playerHud() { return playerHud },
+  get playerName() { return playerName },
+  get remotes() { return remotes },
+  get roster() { return roster },
+  get scoreUI() { return scoreUI },
+  get ultSlot() { return ultSlot },
+  get xpTimeline() { return xpTimeline },
+  get zoneHeal() { return zoneHeal },
+}
+
 // --- Zona de cura ----------------------------------------------------------------------
-function broadcastMedkit() {
-  net.sendMedkit(medkit.snapshot())
-  medResend = 0
-}
-
-function announceMedkit() {
-  announce('💊 HEALING ZONE!', `stay inside: up to ${Math.round(MEDKIT.healOfMissing * 100)}% of missing HP in ${MEDKIT.duration}s`, 'heal')
-}
-
-// Carros na arena (eu e os outros, bonecos incluídos), com a vida
-function playersWithHp() {
-  const players = []
-  if (!health.isKO) players.push({ x: car.root.position.x, z: car.root.position.z, hp: health.hp })
-  for (const p of remotes.values()) {
-    if (p.car.hasState && !p.ko) players.push({ x: p.car.root.position.x, z: p.car.root.position.z, hp: p.hp })
-  }
-  return players
-}
-
-// Perto da briga: centro a poucos metros de `target` (o ferido daquela briga)
-function placeMedkit(target) {
-  return placeNearFight(medkitSpots, [target])
-}
-
-// Quantos na sala (no campo de testes, os bonecos contam)
-const playerCount = () => 1 + roster.size + Math.max(dummies.size, netBots.size)
-
-// Passo fixo: o anfitrião sorteia; eu curo enquanto estou dentro
-function updateMedkit(dt) {
-  const host = amHost()
-  const hurt = playersWithHp().filter((p) => p.hp <= MEDKIT.lowHp)
-  const born = medkit.update(dt, host, { hurt, place: placeMedkit, maxZones: maxZonesFor(playerCount()) })
-  if (born) {
-    if (born.length) announceMedkit()
-    broadcastMedkit()
-  }
-  if (host && (medResend += dt) >= 2) broadcastMedkit()
-
-  const pos = car.root.position
-  const inside = !health.isKO && medkit.contains(pos.x, pos.z)
-  playerHud.health.root.classList.toggle('healing', inside)
-  if (!inside) {
-    zoneHeal.carry = 0
-  } else {
-    healShown += health.heal(zoneHeal.update(dt, health.hp, health.max))
-  }
-  // "+N VIDA" uma vez por segundo, somando o que curou
-  healPopupTimer += dt
-  if (healPopupTimer >= 1) {
-    healPopupTimer = 0
-    if (healShown > 0) scoreUI.popup(pos, 'heal', healShown)
-    healShown = 0
-  }
-}
-
-// 3, 2, 1, JÁ! (carros parados até o fim)
-function updateCountdown(dt) {
-  if (phase === 'countdown') {
-    countdown -= dt
-    menu.showCount(Math.ceil(countdown))
-    if (countdown <= 0) phase = 'playing'
-  } else if (goTimer < GO_SHOW_TIME) {
-    goTimer += dt
-    if (goTimer >= GO_SHOW_TIME) menu.showCount(null)
-  }
-}
+const { announceMedkit, placeMedkit, playersWithHp, updateCountdown, updateMedkit } = createHealZone(ctx)
 
 // --- Loop -------------------------------------------------------------------------
 // Passo fixo para tudo que muda o estado do jogo; desenho separado (loop.js)
@@ -1927,14 +1927,14 @@ const loop = new FixedStepLoop({
     orbs.update(dt)
     if (!car || !inMatch()) return // (fim de partida também: tudo para atrás do resultado)
     updateCountdown(dt)
-    if (phase === 'playing') playTime += dt
-    if (phase === 'playing' && !testMode) updateMatchClock(dt)
-    const playing = phase === 'playing'
+    if (game.phase === 'playing') game.playTime += dt
+    if (game.phase === 'playing' && !testMode) updateMatchClock(dt)
+    const playing = game.phase === 'playing'
     car.savePrevious()
     if (health.update(dt)) respawn()
     if (net) updateProgression()
     if (playing && isDown('KeyR') && !health.isKO) car.reset()
-    const stunned = simTime < stunUntil
+    const stunned = simTime < game.stunUntil
     if (playing && !health.isKO && !stunned) updateBoost()
     // Nocauteado, atordoado ou na contagem não dirige, mas ainda pode ser empurrado
     // Lançando a Onda de choque: parado no lugar (ainda pode ser empurrado)
@@ -1969,7 +1969,7 @@ const loop = new FixedStepLoop({
     if (car && inMatch()) renderUltimate(dt)
     updateDarkness() // depois da câmera: a visão fica em cima do meu carro
     medViews.forEach((view, i) => view.update(dt, inMatch() ? medkit.zones[i] ?? null : null))
-    matchClock.show(inMatch() && !testMode ? formatClock(matchLeft) : null, matchLeft <= 30)
+    matchClock.show(inMatch() && !testMode ? formatClock(game.matchLeft) : null, game.matchLeft <= 30)
     bats?.update(dt)
     tireWalls?.update(dt)
     sun.follow(groupCamera.center, Math.max(12, groupCamera.distance * 0.55))
@@ -1981,12 +1981,12 @@ const loop = new FixedStepLoop({
       playerHud.render({
         hp: health.hp,
         maxHp: health.max,
-        level: myLevel,
+        level: game.myLevel,
         levelProgress: levelProgress(damageTally.get(net.selfId) ?? 0),
         ko: health.isKO,
         shielded: health.isShielded,
         koTimer: health.koTimer,
-        boosts,
+        boosts: game.boosts,
         boosting: car.isBoosting,
         boostLocked: boostLocked(),
         ult: {
@@ -2001,7 +2001,9 @@ const loop = new FixedStepLoop({
       })
       renderScoreboard(dt)
     }
+    renderer.info.reset()
     outline.render()
+    if (quality.showFps) drawStats.textContent = `${renderer.info.render.calls} calls · ${(renderer.info.render.triangles / 1000).toFixed(0)}k tris`
     car?.endRender()
   },
 })
@@ -2110,7 +2112,7 @@ function renderScoreboard(dt) {
   scoreboardTimer = 0
   const tally = currentKills()
   const assists = currentAssists()
-  const players = [{ name: myName || 'You', color: swatch(readColors(bodyMaterials)), hp: health.hp, maxHp: health.max, level: myLevel, ko: health.isKO, isMe: true, kills: tally.get(net.selfId) ?? 0, assists: assists.get(net.selfId) ?? 0, deaths: kills.deaths }]
+  const players = [{ name: game.myName || 'You', color: swatch(readColors(bodyMaterials)), hp: health.hp, maxHp: health.max, level: game.myLevel, ko: health.isKO, isMe: true, kills: tally.get(net.selfId) ?? 0, assists: assists.get(net.selfId) ?? 0, deaths: kills.deaths }]
   for (const [peerId, player] of remotes.entries()) {
     players.push({
       name: playerName(peerId),
@@ -2129,109 +2131,7 @@ function renderScoreboard(dt) {
 }
 
 // --- Partida: relógio, placar e fim --------------------------------------------------------
-// Abates de todos: soma o "quem me nocauteou" de todo mundo (inclusive de
-// quem já saiu)
-function currentKills() {
-  return tallyKills([kills, ...remotes.values(), ...departed.values()])
-}
-
-// XP ganho por todos (base do nível)
-function currentXp() {
-  return tallyXp([kills, ...remotes.values(), ...departed.values()])
-}
-
-function currentAssists() {
-  return tallyAssists([kills, ...remotes.values(), ...departed.values()])
-}
-
-// Passo fixo: níveis de todos pelo placar; subi de nível = mais vida máxima
-// (a vida sobe junto) e aviso na tela. Os bonecos sobem do mesmo jeito
-function updateProgression() {
-  damageTally = currentXp()
-  const level = levelOf(net.selfId)
-  if (level > myLevel) {
-    health.setMax(maxHealthFor(level))
-    scoreUI.popup(car.root.position, 'levelup', level)
-    announce(`⬆ LEVEL ${level}!`, `damage x${damageScale(level).toFixed(1)} · max HP ${health.max}`, 'levelup')
-  }
-  myLevel = level
-  if (import.meta.env.DEV && phase === 'playing') {
-    levelTimer.update(net.selfId, level, playTime)
-    xpTimeline.update(net.selfId, damageTally.get(net.selfId) ?? 0, playTime)
-    for (const [id] of remotes.entries()) {
-      levelTimer.update(id, levelOf(id), playTime)
-      xpTimeline.update(id, damageTally.get(id) ?? 0, playTime)
-    }
-  }
-  for (const d of dummies.values()) {
-    d.level = levelOf(d.id)
-    d.health.setMax(maxHealthFor(d.level))
-  }
-}
-
-// Passo fixo: conta o tempo; o anfitrião acerta o relógio dos outros a cada 2 s
-function updateMatchClock(dt) {
-  matchLeft -= dt
-  const host = amHost()
-  if (host && (matchResend += dt) >= 2) {
-    matchResend = 0
-    net.sendMatch({ left: Math.max(0, matchLeft), over: false })
-  }
-  if (matchLeft <= 0) endMatch()
-}
-
-// Fim: carros param, aparece quem venceu e o placar de todos
-function endMatch() {
-  if (phase === 'over' || !inMatch()) return
-  phase = 'over'
-  matchLeft = 0
-  if (amHost()) net.sendMatch({ left: 0, over: true })
-  ultSlot.stop()
-  car.speedScale = 1
-  const tally = currentKills()
-  const assists = currentAssists()
-  const rows = [{ id: net.selfId, name: myName || 'You', kills: tally.get(net.selfId) ?? 0, assists: assists.get(net.selfId) ?? 0, deaths: kills.deaths, me: true }]
-  for (const [peerId, p] of remotes.entries()) {
-    rows.push({ id: peerId, name: playerName(peerId), kills: tally.get(peerId) ?? 0, assists: assists.get(peerId) ?? 0, deaths: p.deaths ?? 0, me: false })
-  }
-  for (const [peerId, p] of departed) rows.push({ id: peerId, name: `${p.name} (left)`, kills: tally.get(peerId) ?? 0, assists: assists.get(peerId) ?? 0, deaths: p.deaths, me: false })
-  const ranked = standings(rows)
-  menu.showResults(ranked, {
-    winnerIds: new Set(winners(ranked).map((p) => p.id)),
-    isHost: amHost(),
-    onAgain: playAgain,
-    onLeave: () => location.assign(location.pathname),
-  })
-  if (import.meta.env.DEV) saveMatchReport(ranked)
-}
-
-// Só no `npm run dev`: grava o relatório da partida em match-stats/ (vite.config.js)
-function saveMatchReport(ranked) {
-  const seconds = MATCH_TIME
-  // Dano por nível: quem bateu e quem apanhou publicam (estado de rede) o que sabem
-  const records = [kills, ...remotes.values(), ...departed.values()]
-  const dealt = tallyDealtByLevel(records)
-  const stats = buildStats(ranked, {
-    seconds, levelOf, xpOf: (id) => damageTally.get(id) ?? 0, levelTimesOf: (id) => levelTimer.timesOf(id),
-    xpByMinuteOf: (id) => xpTimeline.perMinute(id),
-    dealtOf: (id) => dealt.get(id) ?? {},
-    takenOf: (id) => (id === net.selfId ? kills.dmgTaken : (remotes.get(id) ?? departed.get(id))?.dmgTaken) ?? {},
-    hpAt: maxHealthFor,
-    hitDamageAt: (level) => Object.fromEntries(['light', 'strong', 'smash', 'turbo'].map((tier) => [tier, scaleDamage(DAMAGE[tier], level)])),
-  })
-  const report = buildReport(stats, { seconds, balance: { DAMAGE, damageParams, HP_SCALE } })
-  fetch('/__match-stats', { method: 'POST', body: JSON.stringify(report) })
-    .then((r) => r.ok || console.error('match-stats:', r.status))
-    .catch((err) => console.error('match-stats:', err))
-}
-
-// Anfitrião: outra partida com mapa novo, placar zerado
-function playAgain() {
-  if (phase !== 'over' || !amHost()) return
-  const map = newLayout()
-  net.sendStart(map)
-  beginMatch(map)
-}
+const { currentAssists, currentKills, endMatch, updateMatchClock, updateProgression } = createMatchFlow(ctx)
 
 // --- Tamanho da tela e qualidade -----------------------------------------------------
 // Tudo que depende da resolução: renderer, contorno, fundo, retícula, faíscas
@@ -2247,6 +2147,7 @@ function applyQuality() {
   ultView.setSize(window.innerWidth, window.innerHeight, renderer.getPixelRatio())
   sun.setShadowResolution(quality.shadowSize)
   fpsMeter.dom.style.display = quality.showFps ? '' : 'none'
+  drawStats.style.display = quality.showFps ? '' : 'none'
 }
 window.addEventListener('resize', applyQuality)
 // Página devolvida pela memória do navegador (voltar/reabrir aba) não

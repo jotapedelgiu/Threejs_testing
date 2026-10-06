@@ -13,3 +13,4 @@ dist
 # Arquivos-fonte do Blender (e os backups automáticos .blend1, .blend2...)
 *.blend
 *.blend[0-9]*
+match-stats/

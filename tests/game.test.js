@@ -4,7 +4,6 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import * as THREE from 'three'
 import { Car } from '../src/car.js'
-import { RemoteCar } from '../src/remoteCar.js'
 import { measureFootprint, testCars, testArenaWalls, testCarCircle } from '../src/collision.js'
 import { SpikedBats, placeBats, extractProp } from '../src/bats.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
@@ -229,7 +228,8 @@ describe('Protocolo de rede', () => {
     const s = validators.state({ ...state, dmgTaken: { 2: 50, x: 'lixo' }, dmgBy: { b: { 3: 40 }, c: 'lixo' } })
     assert.deepEqual(s.dmgTaken, { 2: 50 })
     assert.deepEqual(s.dmgBy, { b: { 3: 40 } })
-    assert.deepEqual(validators.state(state).dmgBy, {}, 'sem o campo (build de produção): vazio')
+    assert.equal(validators.state(state).dmgBy, undefined, 'sem o campo: não mudou (netSend.js)')
+    assert.deepEqual(validators.state({ ...state, dmgBy: 'lixo' }).dmgBy, {}, 'presente mas inválido: vazio')
   })
 
   test('estado válido passa', () => {
@@ -326,25 +326,6 @@ describe('Esferas', () => {
     const late = make('a')
     late.merge(a.snapshot())
     assert.equal(positions(late), positions(a))
-  })
-})
-
-describe('Carro remoto (interpolação)', () => {
-  const snap = (t, z) => ({ t, x: 0, z, yaw: 0, vx: 0, vz: 10, y: 0, roll: 0, pitch: 0 })
-
-  test('mostra o passado entre dois estados reais', () => {
-    const r = new RemoteCar(new THREE.Object3D())
-    // estados a cada 0,05 s chegando com 0,08 s de atraso
-    for (let i = 0; i <= 10; i++) r.setState(snap(i * 0.05, i * 0.5), i * 0.05 + 0.08)
-    r.sample(0.5 + 0.08) // agora: último estado é t=0.5; mostra ~t=0.4
-    assert.ok(Math.abs(r.position.z - 4) < 0.1, `z=${r.position.z}`)
-  })
-
-  test('estado atrasado/repetido é ignorado', () => {
-    const r = new RemoteCar(new THREE.Object3D())
-    r.setState(snap(1, 5), 1)
-    r.setState(snap(0.5, 99), 1.1)
-    assert.equal(r.snapshots.length, 1)
   })
 })
 
@@ -488,19 +469,6 @@ describe('Mapa da partida', () => {
 })
 
 describe('Nocaute: sumir e reaparecer', () => {
-  const snap = (t, x, tp) => ({ t, x, z: 0, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0, tp })
-
-  test('carro remoto: teletransporte vai direto, sem deslizar pelo mapa', () => {
-    const r = new RemoteCar(new THREE.Object3D())
-    for (let i = 0; i <= 10; i++) r.setState(snap(i * 0.05, 0, 0), i * 0.05 + 0.05)
-    // Volta do nocaute: aparece em x = 30 (tp mudou)
-    r.setState(snap(0.55, 30, 1), 0.6)
-    for (const now of [0.6, 0.62, 0.65, 0.7]) {
-      r.sample(now)
-      assert.equal(r.position.x, 30, `em t=${now} já está no lugar novo, sem passar pelo meio`)
-    }
-  })
-
   test('meu carro: reset não deixa o quadro seguinte interpolado', () => {
     const car = makeCar()
     car.savePrevious()

@@ -14,7 +14,7 @@ export class GroupCamera {
     azimuth: 180,
     fov: 35,
     minDistance: 22,  // zoom máximo (todos juntos ou jogando sozinho)
-    maxDistance: 90,  // zoom out máximo
+    maxDistance: 50,  // zoom out máximo (a 90 m cabia a arena toda e o carro ficava minúsculo; o jogador sempre fica no quadro: keepInFrame)
     margin: 4,        // folga em volta dos carros (m)
     lookAhead: 0.5,   // s: enquadra onde cada carro vai estar, não só onde está
     smoothing: 3,     // quanto maior, mais rápido a câmera acompanha

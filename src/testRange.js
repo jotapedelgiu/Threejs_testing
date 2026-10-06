@@ -152,6 +152,8 @@ export function localNet(onHit) {
   return {
     selfId: 'eu',
     sendState: nothing,
+    sendMove: nothing,
+    sendBotMoves: nothing,
     sendHit: onHit,
     sendWall: nothing,
     sendPickup: nothing,

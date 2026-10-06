@@ -77,6 +77,12 @@ const edgeShader = {
       return texture2D(tNormal, uv).xyz * 2.0 - 1.0;
     }
 
+    // Direções das 8 amostras de cada anel (a cada 45°), prontas: sem cos/sin por pixel
+    const vec2 RING[8] = vec2[8](
+      vec2(1.0, 0.0), vec2(0.70710678, 0.70710678), vec2(0.0, 1.0), vec2(-0.70710678, 0.70710678),
+      vec2(-1.0, 0.0), vec2(-0.70710678, -0.70710678), vec2(0.0, -1.0), vec2(0.70710678, -0.70710678)
+    );
+
     void main() {
       vec4 color = texture2D(tColor, vUv);
       float depth = linearDepth(vUv);
@@ -102,8 +108,7 @@ const edgeShader = {
       for (int ring = 1; ring <= 2; ring++) {
         float r = radius * float(ring) * 0.5;
         for (int i = 0; i < 8; i++) {
-          float a = float(i) * 0.78539816;
-          vec2 uv = vUv + vec2(cos(a), sin(a)) * r * px;
+          vec2 uv = vUv + RING[i] * r * px;
           float d = linearDepth(uv);
 
           // Vizinho mais perto que eu => estou fora da silhueta dele
@@ -112,7 +117,7 @@ const edgeShader = {
           float threshold = uDepthThreshold + grazing;
           float e = smoothstep(threshold, threshold * 1.5, rel);
           edge = max(edge, e);
-          markedEdge = max(markedEdge, e * marked(uv));
+          if (e > 0.0) markedEdge = max(markedEdge, e * marked(uv)); // só lê o alfa onde há borda
 
           if (uNormalEdges && d <= depth * (1.0 + uDepthThreshold)) {
             float nd = 1.0 - dot(normal, viewNormal(uv));

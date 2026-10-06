@@ -42,7 +42,7 @@
         "yaw (°)": 180,
         "field of view": 35,
         "min. distance": 22,
-        "max. distance": 90,
+        "max. distance": 50,
         "margin (m)": 4,
         "look-ahead (s)": 0.5,
         "smoothing (inv.)": 3

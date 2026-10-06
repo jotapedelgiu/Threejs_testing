@@ -3,12 +3,18 @@
 // testado no Node.
 //
 // Mensagens:
-//   state  { t, x, z, yaw, vx, vz, y, roll, pitch, boosting, tp, hp, ko, shield, livery, colors, ult }
+//   state  { t, x, z, yaw, yawRate, vx, vz, y, roll, pitch, boosting, tp, hp, ko, shield, livery, colors, ult }
 //          (ult = tipo do ultimate em uso agora, ou null; ms = mísseis disparados até agora:
 //          aumentou = lançar um míssil daquele carro; deaths = mortes na partida; koBy = quantas
 //          vezes foi nocauteado por quem: { id: n } (o placar de abates sai daqui; match.js))
 //          (tp = contador de teletransportes: mudou, não interpola)
-//          estado do carrinho de quem manda, 20x por segundo (t = relógio de simulação)
+//          estado do carrinho de quem manda: só quando o modelo de extrapolação de quem recebe
+//          erraria demais, ou a cada 0,25 s (deadReckoning.js); t = relógio de simulação
+//          (para economizar rede, colors/livery/deaths/koBy/asBy/xpBy/dmgBy/dmgTaken só vão quando
+//          mudam e a cada poucos segundos: ausente = igual ao último recebido; netSend.js)
+//   (state também viaja em binário, ação `mv`: netPack.js, 30 bytes, sem os campos lentos; e a lista de
+//    bots, ação `bmv`: u8 de contagem + [u16 do bot + estado]. Ambos viram o mesmo objeto de `state`/`bots`
+//    em validators.move / validators.botMoves)
 //   hit    { target, ix, iz, damage, boosted, stun, zap, blast, rocket, slam }  quem bateu: empurrão e
 //                                               dano que `target` recebe (stun = s atordoado; zap =
 //                                               raio da Sobrecarga; blast = Onda de choque; rocket = míssil;
@@ -27,8 +33,10 @@
 //   ultreq { n, op, i }                         pedido ao anfitrião: 'claim' (passei no item i)
 //   medkit { v, zones: [{ id, x, z, left }] }   zonas de cura ativas (só o anfitrião manda; medkit.js)
 //   match  { left, over }                       relógio da partida (só o anfitrião manda; match.js)
-//   bots   { list: [{ id, name, kind, state }] } bots da partida (só o anfitrião manda, 20x por
-//                                               segundo; state = mesmo formato do `state`; bots.js)
+//   bots   { list: [{ id, name?, kind?, state }], complete } bots da partida (só o anfitrião manda, 20x por
+//                                               segundo; state = mesmo formato do `state`; bots.js;
+//                                               name/kind só de tempos em tempos; complete = a lista
+//                                               tem todos os bots, quem não está nela saiu; botBroadcast.js)
 //   (hit.by = bot que bateu, quando o anfitrião manda a batida de um bot; o id começa com "bot-")
 //   (hit.chain/relay = batida em cadeia: quem bateu tinha sido empurrado por `chain`, e o dano
 //    é dele, reduzido; relay = quantos repasses)
@@ -39,6 +47,7 @@
 // Mensagem inválida é descartada (null).
 import { ULT_KINDS, ULT_ITEMS } from './ultimate.js'
 import { CHAIN_MAX } from './damage.js'
+import { unpackMove, unpackBots } from './netPack.js'
 
 const MAX_SPEED = 60 // m/s; bem acima de qualquer velocidade real do jogo
 const MAX_COORD = 1000
@@ -95,22 +104,24 @@ export const validators = {
       pitch: num(m?.pitch, -Math.PI, Math.PI),
     }
     if (anyNull(out)) return null
+    out.yawRate = num(m.yawRate, -50, 50) ?? 0 // ausente: 0 (deadReckoning.js)
     out.boosting = m.boosting === true
     out.tp = int(m.tp, 0, 1e9) ?? 0
     out.hp = int(m.hp, 0, 5000) ?? 0
     out.ko = m.ko === true
     out.shield = m.shield === true
-    out.livery = str(m.livery, 40)
-    out.colors = Array.isArray(m.colors) && m.colors.length === 2 && m.colors.every(isColor) ? m.colors : null
+    // Campos lentos (netSend.js): ausente = não mudou (undefined); presente mas inválido = vazio/null
+    out.livery = m.livery === undefined ? undefined : str(m.livery, 40)
+    out.colors = m.colors === undefined ? undefined : Array.isArray(m.colors) && m.colors.length === 2 && m.colors.every(isColor) ? m.colors : null
     out.ult = ULT_KINDS.includes(m.ult) ? m.ult : null
     out.ghost = m.ghost === true // Emboscada: invisível para os outros
     out.ms = int(m.ms, 0, 1e6) ?? 0
-    out.deaths = int(m.deaths, 0, 1e6) ?? 0
-    out.koBy = countsOf(m.koBy)
-    out.asBy = countsOf(m.asBy)
-    out.xpBy = countsOf(m.xpBy)
-    out.dmgTaken = countsOf(m.dmgTaken)
-    out.dmgBy = nestedCountsOf(m.dmgBy)
+    out.deaths = m.deaths === undefined ? undefined : int(m.deaths, 0, 1e6) ?? 0
+    out.koBy = m.koBy === undefined ? undefined : countsOf(m.koBy)
+    out.asBy = m.asBy === undefined ? undefined : countsOf(m.asBy)
+    out.xpBy = m.xpBy === undefined ? undefined : countsOf(m.xpBy)
+    out.dmgTaken = m.dmgTaken === undefined ? undefined : countsOf(m.dmgTaken)
+    out.dmgBy = m.dmgBy === undefined ? undefined : nestedCountsOf(m.dmgBy)
     return out
   },
   hit(m) {
@@ -215,11 +226,24 @@ export const validators = {
     for (const b of m.list) {
       const id = botId(b?.id)
       const state = validators.state(b?.state)
-      if (!id || !state || !BOT_KINDS.includes(b.kind)) return null
-      const name = typeof b.name === 'string' ? b.name.replace(/\s+/g, ' ').trim().slice(0, 24) : 'Bot'
-      list.push({ id, name, kind: b.kind, state })
+      // nome e tipo só vêm de tempos em tempos (netSend.js): ausentes = os de antes (null)
+      const hasInfo = b?.kind !== undefined
+      if (!id || !state || (hasInfo && !BOT_KINDS.includes(b.kind))) return null
+      const name = !hasInfo ? null : typeof b.name === 'string' ? b.name.replace(/\s+/g, ' ').trim().slice(0, 24) : 'Bot'
+      list.push({ id, name, kind: hasInfo ? b.kind : null, state })
     }
-    return { list }
+    // complete: a lista tem TODOS os bots (quem não está nela saiu); senão só os que mudaram
+    return { list, complete: m.complete === true }
+  },
+  // Estado enxuto em binário (netPack.js): vira o mesmo objeto de `state`, validado do mesmo jeito
+  move(m) {
+    const raw = unpackMove(m)
+    return raw ? validators.state(raw) : null
+  },
+  // Lista de bots enxuta em binário: sem nome/tipo (ficam os de antes)
+  botMoves(m) {
+    const raw = unpackBots(m)
+    return raw ? validators.bots(raw) : null
   },
   ultreq(m) {
     const n = int(m?.n, 0, 1e9)

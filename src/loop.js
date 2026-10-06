@@ -72,6 +72,7 @@ export class FixedStepLoop {
     const source = `setInterval(() => postMessage(0), ${this.backgroundTickMs})`
     const url = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }))
     this.worker = new Worker(url)
+    URL.revokeObjectURL(url) // o Worker já leu o script
     this.worker.onmessage = () => {
       const now = performance.now()
       // Com os quadros rodando, quem avança é o frame(); só entra se pararam

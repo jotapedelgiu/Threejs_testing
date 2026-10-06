@@ -47,6 +47,10 @@ ultimates.
 | E | usar o ultimate guardado (pega no centro da arena; 1 min de recarga) |
 | R | voltar ao ponto de início |
 
+Controle (Xbox/PlayStation, é só plugar e mexer): RT/LT acelera e freia, analógico
+esquerdo vira, A = boost, X = ultimate, Y = voltar ao início, Select = placar.
+Zona morta de 15% no analógico (`gamepad.js`).
+
 Vida: cada jogador começa com 500 (sobe até 1000 no nível máximo). Toda
 batida tira de quem levou 25, 60 (FORTE) ou 120 (PANCADA) conforme a força de
 quem bateu; batida com boost tira 190 (TURBO) e, se a vítima bater na parede
@@ -82,7 +86,7 @@ ajusta física, câmera, cores e efeitos. No
 | `main.js` | ponto de entrada: monta as peças e contém as regras da partida |
 | `loop.js` | game loop com passo fixo + relógio em Web Worker para aba escondida |
 | `car.js` | física arcade do carrinho (pedal, volante, boost, batidas, quique) |
-| `remoteCar.js` | carro de outro jogador, desenhado por interpolação de estados |
+| `remoteCar.js` | carro de outro jogador: extrapolado entre os estados recebidos (dead reckoning), com o erro suavizado quando chega um estado novo |
 | `remotePlayers.js` | cria/atualiza/remove os jogadores remotos |
 | `collision.js` | colisão cápsula × cápsula e cápsula × paredes |
 | `damage.js` | regras de batida, dano e vida (quem bateu, força, nocaute) |
@@ -99,6 +103,8 @@ ajusta física, câmera, cores e efeitos. No
 | `layout.js` | mapa de cada partida: semente nova, e a sala adota o mapa mais antigo |
 | `random.js` | números aleatórios com semente (mesmas posições para a sala toda) |
 | `net.js` / `protocol.js` | conexão P2P (Trystero) / formato e validação das mensagens |
+| `deadReckoning.js` | modelo de extrapolação do carro (velocidade que gira com ele), igual em quem manda e em quem recebe, e os limites de erro que decidem quando mandar |
+| `netSend.js` / `netPack.js` | economia de rede: o estado só vai quando o modelo erraria, campos lentos só quando mudam, e o estado enxuto (e a lista de bots) vai em binário (30 bytes) |
 | `paint.js` | pinturas (liveries), cores e brilho do boost |
 | `environment.js` | fundo em degradê, sol com sombra, arena |
 | `groupCamera.js` | câmera que enquadra todos os carrinhos |

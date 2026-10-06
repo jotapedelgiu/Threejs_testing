@@ -102,6 +102,7 @@ export class Car {
       x: this.root.position.x,
       z: this.root.position.z,
       yaw: this.yaw,
+      yawRate: this.yawRate, // rad/s: quem recebe extrapola em arco (deadReckoning.js)
       vx: this.velocity.x,
       vz: this.velocity.z,
       y: this.body.position.y,

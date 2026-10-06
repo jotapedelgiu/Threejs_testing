@@ -51,6 +51,7 @@ export class RemotePlayers {
     const player = {
       car: new RemoteCar(model), bodyMaterials, livery: null,
       hp: 0, ko: false, shield: false, boosting: false, ult: null, ghost: false,
+      koBy: {}, asBy: {}, xpBy: {}, dmgBy: {}, dmgTaken: {}, deaths: 0,
       presence: new Presence(), // some no nocaute, reaparece com "pop"
     }
     this.scene.add(player.car.root)
@@ -80,15 +81,13 @@ export class RemotePlayers {
     const missilesFired = player.ms === undefined ? 0 : Math.max(0, state.ms - player.ms)
     player.ms = state.ms
     // Placar: quem o nocauteou desde o último estado (para o kill feed)
-    const killedBy = newKills(player.koBy, state.koBy)
-    player.koBy = state.koBy
-    player.asBy = state.asBy
-    player.xpBy = state.xpBy
-    player.dmgBy = state.dmgBy
-    player.dmgTaken = state.dmgTaken
-    player.deaths = state.deaths
-    const liveryChanged = state.livery !== player.livery
-    player.livery = state.livery
+    // (campo ausente = não mudou desde o último estado; netSend.js)
+    const killedBy = newKills(player.koBy, state.koBy ?? player.koBy)
+    for (const field of ['koBy', 'asBy', 'xpBy', 'dmgBy', 'dmgTaken', 'deaths']) {
+      if (state[field] !== undefined) player[field] = state[field]
+    }
+    const liveryChanged = state.livery !== undefined && state.livery !== player.livery
+    if (state.livery !== undefined) player.livery = state.livery
     return { player, liveryChanged, knockedOut, ultStarted, slammed, missilesFired, killedBy }
   }
 
