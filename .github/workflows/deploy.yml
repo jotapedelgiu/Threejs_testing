@@ -28,6 +28,11 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+        env:
+          # Servidor TURN do multiplayer (ver src/net.js); opcional
+          VITE_TURN_URL: ${{ secrets.TURN_URL }}
+          VITE_TURN_USER: ${{ secrets.TURN_USER }}
+          VITE_TURN_CREDENTIAL: ${{ secrets.TURN_CREDENTIAL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

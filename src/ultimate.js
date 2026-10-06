@@ -1,3 +1,5 @@
+import { HP_SCALE } from './damage.js'
+
 // Ultimate: poderes bem fortes que aparecem em lugares aleatórios da arena a
 // cada 30 s: TRÊS ao mesmo tempo, longe uns dos outros e de tipos diferentes, sorteados entre os tipos
 // de ULTIMATES. Sem dependências, para poder ser
@@ -35,7 +37,7 @@ export const ULTIMATES = {
     duration: 6,      // s
     radius: 8,        // m em volta do dono
     tick: 0.5,        // s entre raios
-    damage: 5,        // por raio
+    damage: 5 * HP_SCALE, // por raio
     push: 3,          // m/s para fora do círculo, por raio
     marksToStun: 3,   // raios no mesmo alvo para atordoar
     stun: 1.25,       // s sem dirigir
@@ -55,8 +57,8 @@ export const ULTIMATES = {
     duration: 1,      // s parado (preparação + percurso)
     length: 22,       // m
     width: 6,         // m
-    maxDamage: 40,    // colado no carro
-    minDamage: 20,    // no fim da faixa
+    maxDamage: 40 * HP_SCALE, // colado no carro
+    minDamage: 20 * HP_SCALE, // no fim da faixa
     maxPush: 34,      // m/s colado no carro
     minPush: 18,      // m/s no fim da faixa
     hint: 'aim and fire: you are rooted while it casts',
@@ -74,7 +76,7 @@ export const ULTIMATES = {
     shotInterval: 0.7, // s entre um míssil e outro
     duration: 3.2,    // s parado (o último sai em 4 × shotInterval; o voo continua sozinho)
     speed: 45,        // m/s
-    damage: 10,       // acerto direto, por míssil (0 = só o rastro)
+    damage: 10 * HP_SCALE, // acerto direto, por míssil (0 = só o rastro)
     push: 5,          // m/s na direção do míssil
     hitRadius: 1.4,   // m em volta do míssil
     trailWidth: 1.4,  // m
@@ -95,7 +97,7 @@ export const ULTIMATES = {
     windup: 0.5,      // s do aviso no chão até a batida
     duration: 15.5,   // s no total (vanish + windup)
     radius: 5,        // m em volta do dono
-    damage: 35,       // entre a PANCADA (24) e o TURBO (38)
+    damage: 35 * HP_SCALE, // entre a PANCADA (24) e o TURBO (38)
     stun: 1,          // s sem dirigir
     hint: 'invisible! ram someone to strike (or wait 15s)',
     enemyHint: 'someone is invisible! watch the ground',

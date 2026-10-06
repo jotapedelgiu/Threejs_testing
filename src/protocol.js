@@ -59,6 +59,16 @@ const countsOf = (v) => {
   }
   return out
 }
+// { id: { nível: dano } } (relatório de partida)
+const nestedCountsOf = (v) => {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return {}
+  const out = {}
+  for (const [id, levels] of Object.entries(v).slice(0, 16)) {
+    const counts = countsOf(levels)
+    if (id.length <= 64 && Object.keys(counts).length) out[id] = counts
+  }
+  return out
+}
 const ULT_OPS = ['claim']
 const BOT_KINDS = ['easy', 'normal', 'hard'] // igual a bots.js
 const MAX_BOTS = 8
@@ -87,7 +97,7 @@ export const validators = {
     if (anyNull(out)) return null
     out.boosting = m.boosting === true
     out.tp = int(m.tp, 0, 1e9) ?? 0
-    out.hp = int(m.hp, 0, 1000) ?? 0
+    out.hp = int(m.hp, 0, 5000) ?? 0
     out.ko = m.ko === true
     out.shield = m.shield === true
     out.livery = str(m.livery, 40)
@@ -99,6 +109,8 @@ export const validators = {
     out.koBy = countsOf(m.koBy)
     out.asBy = countsOf(m.asBy)
     out.xpBy = countsOf(m.xpBy)
+    out.dmgTaken = countsOf(m.dmgTaken)
+    out.dmgBy = nestedCountsOf(m.dmgBy)
     return out
   },
   hit(m) {
@@ -106,7 +118,7 @@ export const validators = {
       target: str(m?.target, 64),
       ix: num(m?.ix, -MAX_SPEED, MAX_SPEED),
       iz: num(m?.iz, -MAX_SPEED, MAX_SPEED),
-      damage: int(m?.damage, 0, 100),
+      damage: int(m?.damage, 0, 2000),
     }
     if (anyNull(out)) return null
     out.boosted = m.boosted === true
@@ -123,7 +135,7 @@ export const validators = {
     return out
   },
   wall(m) {
-    const out = { damage: int(m?.damage, 0, 100) }
+    const out = { damage: int(m?.damage, 0, 2000) }
     return anyNull(out) ? null : out
   },
   pickup(m) {
@@ -136,7 +148,7 @@ export const validators = {
       dx: num(m?.dx, -1, 1),
       dz: num(m?.dz, -1, 1),
       strength: num(m?.strength, 0, MAX_SPEED),
-      damage: int(m?.damage, 0, 100),
+      damage: int(m?.damage, 0, 2000),
     }
     return anyNull(out) ? null : out
   },

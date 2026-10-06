@@ -44,6 +44,8 @@ export class TrainingDummy {
     this.boosts = 0       // estoque de boosts (só bots pegam esferas)
     this.stunUntil = 0    // atordoado (Sobrecarga) até este instante
     this.colors = DUMMY_COLORS
+    this.level = 1        // nível atual (main.js): o dano que ele leva entra no relatório por nível
+    this.onKnockedOut = null // (killer | null) => void: nocauteado (sequência de abates; main.js)
     this.deathSpot = null // onde foi nocauteado (bot renasce longe dali)
     // Ultimate (só bots; main.js): inventário, efeitos em andamento e mísseis
     this.ult = null       // UltimateSlot
@@ -70,7 +72,7 @@ export class TrainingDummy {
    * Batida que um jogador "mandou" para o boneco: empurrão e dano.
    * `xpFor(dealt)` e `killXp`: XP do golpe e do abate, que o boneco (a vítima) calcula.
    */
-  receive(hit, now, attacker, xpFor = (dealt) => dealt, killXp = 0) {
+  receive(hit, now, attacker, xpFor = (dealt) => dealt, killXp = 0, attackerLevel = 1) {
     this.car.applyImpulse(tmpImpulse.set(hit.ix, 0, hit.iz))
     if (hit.boosted) this.boostedUntil = now + WALL_DAMAGE_WINDOW
     if (hit.blast) this.blastUntil = now + WALL_DAMAGE_WINDOW
@@ -79,16 +81,21 @@ export class TrainingDummy {
     if (!hit.mutual) this.pushChain.pushed(attacker, hit.relay ?? 0, now, hit.ix, hit.iz)
     this.kills.noteHit(attacker, now)
     const result = this.hurt(hit.damage, now)
+    this.kills.noteDealt(attacker, attackerLevel, result.dealt)
     this.kills.noteXp(attacker, xpFor(result.dealt))
-    if (result.knockedOut) this.kills.noteXp(attacker, killXp)
+    // killXp pode ser função: só se calcula no abate, depois de onKnockedOut
+    // registrar a sequência de abates (streaks.js)
+    if (result.knockedOut) this.kills.noteXp(attacker, typeof killXp === 'function' ? killXp() : killXp)
     return result
   }
 
   /** Dano (batida, parede, espinho); no nocaute, o abate vai para quem bateu por último. */
   hurt(amount, now) {
     const result = this.health.damage(amount)
+    this.kills.noteTaken(this.level, result.dealt)
     if (result.knockedOut) {
-      this.kills.knockedOut(now)
+      const killer = this.kills.knockedOut(now)
+      this.onKnockedOut?.(killer)
       this.car.endBoost()
       this.deathSpot = { x: this.x, z: this.z }
     }
@@ -120,13 +127,15 @@ export class TrainingDummy {
   }
 
   /** Estado no mesmo formato do que chega pela rede (protocol.js: state). */
-  state(t) {
+  state(t, stats = false) {
     return {
       ...this.car.getNetState(), t,
       hp: this.health.hp, ko: this.health.isKO, shield: this.health.isShielded,
       livery: null, colors: this.colors, ult: this.ult?.active ?? null, ghost: this.ult?.ghost ?? false, ms: this.missilesFired,
       deaths: this.kills.deaths, koBy: { ...this.kills.koBy }, asBy: { ...this.kills.asBy },
       xpBy: { ...this.kills.xpBy },
+      // Só para o relatório de partida (matchStats.js): pesa na mensagem, então só no dev
+      ...(stats ? { dmgBy: structuredClone(this.kills.dmgBy), dmgTaken: { ...this.kills.dmgTaken } } : {}),
     }
   }
 }

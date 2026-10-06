@@ -47,12 +47,13 @@ ultimates.
 | E | usar o ultimate guardado (pega no centro da arena; 1 min de recarga) |
 | R | voltar ao ponto de início |
 
-Vida: cada jogador tem 100. Toda batida tira de quem levou 4, 8 (FORTE) ou
-12 (PANCADA) conforme a força de quem bateu; batida com boost tira 24
-(TURBO) e, se a vítima bater na parede logo depois, mais 8 (PAREDE). Com a
+Vida: cada jogador começa com 500 (sobe até 1000 no nível máximo). Toda
+batida tira de quem levou 25, 60 (FORTE) ou 120 (PANCADA) conforme a força de
+quem bateu; batida com boost tira 190 (TURBO) e, se a vítima bater na parede
+logo depois, mais 40 (PAREDE). Esses valores crescem com o nível de quem bate. Com a
 vida zerada, o carrinho fica 2,5 s nocauteado e volta com vida cheia e 2 s
 de proteção. Cada jogador guarda até 2 boosts. Bastões com espinhos
-espalhados pela arena repelem o carro e tiram 6 (ESPINHOS).
+espalhados pela arena repelem o carro e tiram 30 (ESPINHOS).
 
 O balanceamento (números e premissas) está em `bate-bate_balanceamento.xlsx`,
 que fica fora do repositório.
@@ -88,7 +89,7 @@ ajusta física, câmera, cores e efeitos. No
 | `orbs.js` | esferas de boost com posições determinísticas por sala |
 | `bats.js` | bastões com espinhos: posição, colisão e animação de ricochete |
 | `ultimate.js` / `ultimateView.js` | ultimate a cada minuto no centro (anfitrião decide) e o visual dele |
-| `progression.js` | níveis: o XP acumulado (dano causado, com bônus por diferença de nível e por abate) sobe o nível (120 para o 2, +138 para o 3, +156...; máx. 10); cada nível dá +5% de dano e +5 de vida máxima |
+| `progression.js` | níveis: o XP acumulado (dano causado, com bônus por diferença de nível e por abate) sobe o nível (120 para o 2, +138 para o 3, +156...; máx. 15); cada nível dá mais dano e vida máxima, com ganho maior no meio (níveis 6 a 10) e menor no começo e no fim: nível 10 = 1,75x de dano e 875 de vida, nível 15 = 2x e 1000 |
 | `medkit.js` / `medkitView.js` | zona de cura: aparece perto da briga quando alguém está com a vida baixa; quem fica dentro cura até 50% da vida perdida |
 | `testRange.js` | campo de testes: bonecos com vida, rede de mentira e painel |
 | `bots.js` | cérebro dos bots: escolhe alvo, persegue, desvia e decide o boost (devolve pedal/volante como o teclado) |

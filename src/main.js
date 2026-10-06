@@ -7,8 +7,9 @@ import { Background, Sun, Arena } from './environment.js'
 import { GroupCamera } from './groupCamera.js'
 import { ControlPanel } from './panel.js'
 import { ScoreUI, PlayerHud, CarTags, ItemArrows, UltimateBanner, MatchClock, KillFeed } from './hud.js'
-import { buildStats, buildReport, LevelTimer } from './matchStats.js'
-import { KillTracker, MATCH_TIME, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock } from './match.js'
+import { buildStats, buildReport, LevelTimer, XpTimeline } from './matchStats.js'
+import { KillTracker, MATCH_TIME, tallyDealtByLevel, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock } from './match.js'
+import { StreakTracker, xpForStreak, streakName } from './streaks.js'
 import { levelFor, levelProgress, damageScale, scaleDamage, maxHealthFor, xpForHit, xpForKill, xpForAssist, repeatScale } from './progression.js'
 import { FixedStepLoop } from './loop.js'
 import { Car } from './car.js'
@@ -36,7 +37,7 @@ import { MedkitView } from './medkitView.js'
 import { TrainingDummy, TestPanel, localNet, DUMMY_SPOTS, TEST_SPAWN } from './testRange.js'
 import { BotBrain, BOT_SKILLS, BOT_KINDS, BOT_NAMES } from './bots.js'
 import {
-  judgeHit, impactTier, tierOfDamage, DAMAGE, damageParams, MIN_IMPULSE, HEAD_ON_MIN, HitCooldown, RamLedger, Health, MAX_HEALTH,
+  judgeHit, impactTier, tierOfDamage, DAMAGE, HP_SCALE, damageParams, MIN_IMPULSE, HEAD_ON_MIN, HitCooldown, RamLedger, Health, MAX_HEALTH,
   PushChain, chainDamage, CHAIN_FALLOFF, BOOST_PUSH, WALL_DAMAGE, WALL_DAMAGE_WINDOW, WALL_DAMAGE_MIN_SPEED, SPIKE_MIN_SPEED,
 } from './damage.js'
 
@@ -267,6 +268,7 @@ let medResend = 0       // anfitrião: reenvia o estado de tempos em tempos
 // Partida (match.js): 6 min, ganha quem tiver mais abates. O placar sai do
 // "quem me nocauteou" (koBy) de cada um; o relógio é do anfitrião
 const kills = new KillTracker() // minhas mortes e quem me abateu
+const streaks = new StreakTracker() // abates seguidos sem morrer, de todos (double, triple...)
 let matchLeft = MATCH_TIME      // s até acabar
 let matchResend = 0             // anfitrião: reenvia o relógio de tempos em tempos
 const departed = new Map()      // quem saiu no meio: { name, koBy, deaths } (os números ficam)
@@ -275,6 +277,7 @@ const departed = new Map()      // quem saiu no meio: { name, koBy, deaths } (os
 let damageTally = new Map()     // id -> XP ganho
 let myLevel = 1
 const levelTimer = new LevelTimer() // só para o relatório de teste (matchStats.js)
+const xpTimeline = new XpTimeline() // idem: XP ganho minuto a minuto
 let playTime = 0 // s de partida valendo (sem a contagem)
 const levelOf = (id) => levelFor(damageTally.get(id) ?? 0)
 let healShown = 0       // cura acumulada ainda não mostrada ("+N VIDA" a cada 1 s)
@@ -426,17 +429,29 @@ function takeDamage(amount, by = null) {
   const attacker = by ? levelOf(by) : 0
   const repeat = by ? repeatScale(kills.sinceKoBy(by, now)) : 1
   const { dealt, knockedOut } = health.damage(amount)
+  kills.noteTaken(myLevel, dealt)
+  kills.noteDealt(by, attacker, dealt)
   kills.noteXp(by, Math.round(xpForHit(dealt, attacker, myLevel) * repeat))
   if (knockedOut) {
     scoreUI.popup(car.root.position, 'ko')
     const killRepeat = repeatScale(kills.sinceKoBy(kills.lastHit?.by, now)) // antes de registrar este abate
     const killer = kills.knockedOut(now)
-    if (killer) kills.noteXp(killer, Math.round(xpForKill(levelOf(killer), myLevel) * killRepeat))
+    noteKill(killer, net.selfId)
+    if (killer) kills.noteXp(killer, Math.round((xpForKill(levelOf(killer), myLevel) + xpForStreak(streaks.count(killer))) * killRepeat))
     if (killer) for (const id of kills.assisters) kills.noteXp(id, Math.round(xpForAssist(levelOf(id), myLevel) * killRepeat))
     if (killer) killFeed.add(playerName(killer), 'You')
     car.endBoost()
     deathSpot = { x: car.root.position.x, z: car.root.position.z }
   }
+}
+
+// Registra um nocaute na sequência de abates (`killer` null: sem crédito de
+// ninguém). Se o abatedor sou eu, mostra o aviso de double/triple/... kill.
+function noteKill(killer, victim) {
+  if (!killer) return streaks.died(victim)
+  const n = streaks.kill(killer, victim)
+  const name = streakName(n)
+  if (killer === net.selfId && name) announce(`🔥 ${name}!`, `+${xpForStreak(n)} XP bonus`, 'go')
 }
 
 // Põe o carro num ponto de nascimento, virado para o centro da arena
@@ -541,12 +556,15 @@ function beginMatch(map, late = false) {
   storm.reset()
   // Placar e relógio do zero (também em "Play again")
   kills.reset()
+  streaks.reset()
   matchLeft = MATCH_TIME
   departed.clear()
   for (const p of remotes.values()) {
     p.koBy = {}
     p.asBy = {}
     p.xpBy = {}
+    p.dmgBy = {}
+    p.dmgTaken = {}
     p.deaths = 0
   }
   if (!testMode) clearMatchBots() // os da partida anterior saem
@@ -558,6 +576,7 @@ function beginMatch(map, late = false) {
   damageTally = new Map()
   myLevel = 1
   levelTimer.reset()
+  xpTimeline.reset()
   playTime = 0
   boosts = 0
   ultClaimed = ultGot = -1
@@ -651,7 +670,7 @@ function startMultiplayer() {
     onPeerLeave(peerId) {
       // Quem sai no meio continua no placar (os abates que deu e levou ficam)
       const gone = remotes?.get(peerId)
-      if (gone && inMatch()) departed.set(peerId, { name: playerName(peerId), koBy: gone.koBy ?? {}, asBy: gone.asBy ?? {}, xpBy: gone.xpBy ?? {}, deaths: gone.deaths ?? 0 })
+      if (gone && inMatch()) departed.set(peerId, { name: playerName(peerId), koBy: gone.koBy ?? {}, asBy: gone.asBy ?? {}, xpBy: gone.xpBy ?? {}, dmgBy: gone.dmgBy ?? {}, dmgTaken: gone.dmgTaken ?? {}, deaths: gone.deaths ?? 0 })
       roster.delete(peerId)
       remotes?.remove(peerId)
       refreshLobby() // se o anfitrião saiu, outro assume
@@ -724,6 +743,8 @@ function handlePeerState(peerId, state) {
   if (!remotes) return // carro ainda carregando
   const { player, liveryChanged, knockedOut, ultStarted, slammed, missilesFired: fired, killedBy } = remotes.applyState(peerId, state, performance.now() / 1000)
   // Kill feed: quem abateu esse jogador desde o último estado
+  if (knockedOut) streaks.died(peerId) // morreu (o abatedor, se houver, vem em killedBy)
+  for (const killer of killedBy) noteKill(killer, peerId)
   for (const killer of killedBy) killFeed.add(killer === net.selfId ? 'You' : playerName(killer), playerName(peerId), killer === net.selfId)
   if (knockedOut) scoreUI.popup(player.car.position, 'ko')
   if (slammed) showSlam(player.car.root.position)
@@ -919,6 +940,8 @@ function sendState(dt, simTime) {
     koBy: kills.koBy,
     asBy: kills.asBy,
     xpBy: kills.xpBy,
+    // Só para o relatório de partida (matchStats.js): pesa na mensagem, então só no dev
+    ...(import.meta.env.DEV ? { dmgBy: kills.dmgBy, dmgTaken: kills.dmgTaken } : {}),
   })
 }
 
@@ -991,7 +1014,8 @@ function damageDummy(d, hit, attackerId) {
   d.receive(
     hit, loop.simTime, attackerId,
     (dealt) => Math.round(xpForHit(dealt, attacker, victim) * repeat),
-    Math.round(xpForKill(attacker, victim) * repeat),
+    () => Math.round((xpForKill(attacker, victim) + xpForStreak(streaks.count(attackerId))) * repeat),
+    attacker,
   )
 }
 
@@ -1006,6 +1030,7 @@ function addDummy() {
   const body = new Car(new THREE.Object3D())
   body.params = car.params
   const dummy = new TrainingDummy(`boneco-${++dummySerial}`, n === 1 ? 'Training Dummy' : `Dummy ${n}`, body, spot)
+  dummy.onKnockedOut = (killer) => noteKill(killer, dummy.id)
   dummies.set(dummy.id, dummy)
 }
 let dummySerial = 0 // ids únicos (bots saem e entram)
@@ -1026,6 +1051,7 @@ function addBot(kind, id = `bot-${++dummySerial}`, avoid = []) {
   const paint = pickLivery([livery?.name, ...(remotes?.liveries() ?? []), ...[...dummies.values()].map((d) => d.livery)])
   bot.livery = paint.name
   bot.colors = [paint.primary, paint.secondary]
+  bot.onKnockedOut = (killer) => noteKill(killer, bot.id)
   dummies.set(bot.id, bot)
   placeBot(bot, avoid)
   return bot
@@ -1068,7 +1094,7 @@ function adoptBots() {
     bot.car.spawnYaw = player.car.yaw
     bot.car.reset()
     bot.health.hp = Math.max(1, player.hp)
-    Object.assign(bot.kills, { deaths: player.deaths ?? 0, koBy: { ...player.koBy }, asBy: { ...player.asBy }, xpBy: { ...player.xpBy } })
+    Object.assign(bot.kills, { deaths: player.deaths ?? 0, koBy: { ...player.koBy }, asBy: { ...player.asBy }, xpBy: { ...player.xpBy }, dmgBy: structuredClone(player.dmgBy ?? {}), dmgTaken: { ...player.dmgTaken } })
   }
 }
 
@@ -1084,7 +1110,7 @@ function updateMatchBots(dt, simTime, wallTime) {
   if (botsTimer < NET_SEND_INTERVAL) return
   botsTimer %= NET_SEND_INTERVAL
   const list = []
-  for (const d of dummies.values()) if (d.isBot) list.push({ id: d.id, name: d.name, kind: d.brain.kind, state: d.state(simTime) })
+  for (const d of dummies.values()) if (d.isBot) list.push({ id: d.id, name: d.name, kind: d.brain.kind, state: d.state(simTime, import.meta.env.DEV) })
   net.sendBots({ list })
 }
 
@@ -1380,7 +1406,7 @@ function updateDummies(dt, simTime) {
       if (judged.role === 'victim') botHits(list[j], list[i], bImpact, hit.normal, 1, simTime)
     }
   }
-  for (const d of list) handlePeerState(d.id, d.state(simTime))
+  for (const d of list) handlePeerState(d.id, d.state(simTime, import.meta.env.DEV))
 }
 
 // Bot bateu em outro carro do campo (o empurrão normal já foi trocado): dano
@@ -2126,9 +2152,16 @@ function updateProgression() {
   myLevel = level
   if (import.meta.env.DEV && phase === 'playing') {
     levelTimer.update(net.selfId, level, playTime)
-    for (const [id] of remotes.entries()) levelTimer.update(id, levelOf(id), playTime)
+    xpTimeline.update(net.selfId, damageTally.get(net.selfId) ?? 0, playTime)
+    for (const [id] of remotes.entries()) {
+      levelTimer.update(id, levelOf(id), playTime)
+      xpTimeline.update(id, damageTally.get(id) ?? 0, playTime)
+    }
   }
-  for (const d of dummies.values()) d.health.setMax(maxHealthFor(levelOf(d.id)))
+  for (const d of dummies.values()) {
+    d.level = levelOf(d.id)
+    d.health.setMax(maxHealthFor(d.level))
+  }
 }
 
 // Passo fixo: conta o tempo; o anfitrião acerta o relógio dos outros a cada 2 s
@@ -2170,8 +2203,18 @@ function endMatch() {
 // Só no `npm run dev`: grava o relatório da partida em match-stats/ (vite.config.js)
 function saveMatchReport(ranked) {
   const seconds = MATCH_TIME
-  const stats = buildStats(ranked, { seconds, levelOf, xpOf: (id) => damageTally.get(id) ?? 0, levelTimesOf: (id) => levelTimer.timesOf(id) })
-  const report = buildReport(stats, { seconds, balance: { DAMAGE, damageParams } })
+  // Dano por nível: quem bateu e quem apanhou publicam (estado de rede) o que sabem
+  const records = [kills, ...remotes.values(), ...departed.values()]
+  const dealt = tallyDealtByLevel(records)
+  const stats = buildStats(ranked, {
+    seconds, levelOf, xpOf: (id) => damageTally.get(id) ?? 0, levelTimesOf: (id) => levelTimer.timesOf(id),
+    xpByMinuteOf: (id) => xpTimeline.perMinute(id),
+    dealtOf: (id) => dealt.get(id) ?? {},
+    takenOf: (id) => (id === net.selfId ? kills.dmgTaken : (remotes.get(id) ?? departed.get(id))?.dmgTaken) ?? {},
+    hpAt: maxHealthFor,
+    hitDamageAt: (level) => Object.fromEntries(['light', 'strong', 'smash', 'turbo'].map((tier) => [tier, scaleDamage(DAMAGE[tier], level)])),
+  })
+  const report = buildReport(stats, { seconds, balance: { DAMAGE, damageParams, HP_SCALE } })
   fetch('/__match-stats', { method: 'POST', body: JSON.stringify(report) })
     .then((r) => r.ok || console.error('match-stats:', r.status))
     .catch((err) => console.error('match-stats:', err))

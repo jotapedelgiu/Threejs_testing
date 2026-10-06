@@ -9,7 +9,7 @@ import { measureFootprint, testCars, testArenaWalls, testCarCircle } from '../sr
 import { SpikedBats, placeBats, extractProp } from '../src/bats.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { readFileSync } from 'node:fs'
-import { judgeHit, impactDamage, impactTier, tierOfDamage, DAMAGE, HitCooldown, RamLedger, PushChain, chainDamage, CHAIN_WINDOW, CHAIN_MAX, HEAD_ON_MIN, damageParams, Health, MAX_HEALTH, KO_TIME, RESPAWN_SHIELD } from '../src/damage.js'
+import { HP_SCALE, judgeHit, impactDamage, impactTier, tierOfDamage, DAMAGE, HitCooldown, RamLedger, PushChain, chainDamage, CHAIN_WINDOW, CHAIN_MAX, HEAD_ON_MIN, damageParams, Health, MAX_HEALTH, KO_TIME, RESPAWN_SHIELD } from '../src/damage.js'
 import { validators } from '../src/protocol.js'
 import { Orbs, orbCountFor } from '../src/orbs.js'
 import { pickLivery, LIVERIES, materialGroup, MATERIAL_GROUPS } from '../src/paint.js'
@@ -23,8 +23,8 @@ import { UltimateDirector, UltimateSlot, StormStrikes, ShockwaveCast, MissileSho
 import { levelFor, damageToLevelUp, damageScale, scaleDamage, maxHealthFor, MAX_LEVEL, xpForHit, xpForKill, xpForAssist, repeatScale, XP_EXTRA } from '../src/progression.js'
 import { MedkitDirector, MEDKIT, ZoneHealing, placeNearFight, HEAL_RATE, maxZonesFor } from '../src/medkit.js'
 import { BotBrain, BOT_SKILLS, headingTo, pathClear } from '../src/bots.js'
-import { KillTracker, KILL_CREDIT, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock, newKills, MATCH_TIME } from '../src/match.js'
-import { buildStats, buildReport, kda, LevelTimer } from '../src/matchStats.js'
+import { KillTracker, KILL_CREDIT, tallyDealtByLevel, tallyKills, tallyXp, tallyAssists, standings, winners, formatClock, newKills, MATCH_TIME } from '../src/match.js'
+import { buildStats, buildReport, kda, LevelTimer, XpTimeline } from '../src/matchStats.js'
 
 const DT = 1 / 60
 // Carro com o tamanho da base do bate-bate (~1,3 x 2,7 m)
@@ -225,6 +225,13 @@ describe('Dano e vida', () => {
 describe('Protocolo de rede', () => {
   const state = { t: 1, x: 2, z: 3, yaw: 0, vx: 0, vz: 0, y: 0, roll: 0, pitch: 0, hp: 80, ko: false, colors: ['#ff0000', '#00ff00'] }
 
+  test('mensagem de estado valida dmgBy/dmgTaken', () => {
+    const s = validators.state({ ...state, dmgTaken: { 2: 50, x: 'lixo' }, dmgBy: { b: { 3: 40 }, c: 'lixo' } })
+    assert.deepEqual(s.dmgTaken, { 2: 50 })
+    assert.deepEqual(s.dmgBy, { b: { 3: 40 } })
+    assert.deepEqual(validators.state(state).dmgBy, {}, 'sem o campo (build de produção): vazio')
+  })
+
   test('estado válido passa', () => {
     const out = validators.state(state)
     assert.equal(out.x, 2)
@@ -243,7 +250,7 @@ describe('Protocolo de rede', () => {
     assert.equal(validators.hit({ target: 'a', ix: 1e9, iz: 0, damage: 1 }).ix, 60)
     assert.equal(validators.state({ ...state, colors: ['red"><img src=x>', '#000000'] }).colors, null)
     assert.equal(validators.state({ ...state, hp: '<b>9</b>' }).hp, 0)
-    assert.equal(validators.wall({ damage: 999 }), null)
+    assert.equal(validators.wall({ damage: 99999 }), null)
     assert.equal(validators.hit({ target: 'a', ix: 0, iz: 0, damage: DAMAGE.turbo }).damage, DAMAGE.turbo)
   })
 
@@ -834,7 +841,7 @@ describe('Ultimate', () => {
     const all = []
     for (let t = 0; t < 1.6; t += 0.1) all.push(...s.update(0.1, 0, 0, targets))
     assert.equal(all.length, 3, '3 raios em 1,5 s')
-    assert.ok(all.every((h) => h.id === 'perto' && h.damage === 5))
+    assert.ok(all.every((h) => h.id === 'perto' && h.damage === ULTIMATES.overcharge.damage))
     assert.deepEqual(all.map((h) => h.stun), [0, 0, 1.25])
     assert.ok(all[0].dx > 0.99, 'empurra para fora do círculo')
   })
@@ -1062,10 +1069,12 @@ describe('Zona de cura', () => {
   })
 
   test('dentro do círculo a zona inteira: cura 50% da vida perdida', () => {
-    assert.ok(Math.abs(stayInside(20, MEDKIT.duration) - (20 + MEDKIT.healOfMissing * 80)) <= 1, `de 20 foi para ${stayInside(20, MEDKIT.duration)}`)
-    assert.ok(Math.abs(stayInside(60, MEDKIT.duration) - (60 + MEDKIT.healOfMissing * 40)) <= 1)
-    assert.ok(stayInside(20, MEDKIT.duration / 2) < stayInside(20, MEDKIT.duration), 'metade do tempo, menos cura')
-    assert.equal(stayInside(100, MEDKIT.duration), 100, 'vida cheia não passa de 100')
+    const full = MAX_HEALTH
+    const low = 0.2 * full, mid = 0.6 * full
+    assert.ok(Math.abs(stayInside(low, MEDKIT.duration) - (low + MEDKIT.healOfMissing * (full - low))) <= 1 * HP_SCALE, `de ${low} foi para ${stayInside(low, MEDKIT.duration)}`)
+    assert.ok(Math.abs(stayInside(mid, MEDKIT.duration) - (mid + MEDKIT.healOfMissing * (full - mid))) <= 1 * HP_SCALE)
+    assert.ok(stayInside(low, MEDKIT.duration / 2) < stayInside(low, MEDKIT.duration), 'metade do tempo, menos cura')
+    assert.equal(stayInside(full, MEDKIT.duration), full, 'vida cheia não passa da máxima')
     assert.ok(HEAL_RATE > 0.08 && HEAL_RATE < 0.095, '~8,7% do que falta por segundo')
   })
 
@@ -1144,9 +1153,9 @@ describe('Míssil', () => {
     assert.ok(c.speed > c.params.maxSpeed * 0.9, 'sem lentidão volta ao normal')
   })
 
-  test('rajada de 5 mísseis de 10 de dano (50 no total), com o carro parado durante ela', () => {
+  test('rajada de 5 mísseis de 10 de dano (50 no total, na escala original), com o carro parado durante ela', () => {
     assert.equal(spec.shots, 5)
-    assert.equal(spec.shots * spec.damage, 50)
+    assert.equal(spec.shots * spec.damage, 50 * HP_SCALE)
     assert.ok((spec.shots - 1) * spec.shotInterval < spec.duration, 'o último sai antes do poder acabar')
     const slot = new UltimateSlot()
     slot.give('missile')
@@ -1253,9 +1262,9 @@ describe('Partida (abates)', () => {
 })
 
 describe('Progressão (níveis)', () => {
-  test('o nível sobe com o XP acumulado: 120, depois 138, 156..., até 10', () => {
-    assert.deepEqual([0, 119, 120, 257, 258, 413, 414, 1727, 1728, 9000].map(levelFor), [1, 1, 2, 2, 3, 3, 4, 9, 10, 10])
-    assert.equal(MAX_LEVEL, 10)
+  test('o nível sobe com o XP acumulado: 120, depois 138, 156..., até 15', () => {
+    assert.deepEqual([0, 119, 120, 257, 258, 413, 414, 1727, 1728, 3317, 3318, 9000].map(levelFor), [1, 1, 2, 2, 3, 3, 4, 9, 10, 14, 15, 15])
+    assert.equal(MAX_LEVEL, 15)
     assert.equal(levelFor(undefined), 1)
     assert.equal(damageToLevelUp(1), 120)
     assert.equal(damageToLevelUp(2), 138)
@@ -1272,10 +1281,12 @@ describe('Progressão (níveis)', () => {
   })
 
   test('XP extra: bater em quem está acima rende mais, abaixo rende menos', () => {
-    assert.equal(xpForHit(20, 5, 5), 20, 'mesmo nível: só o dano')
-    assert.equal(xpForHit(20, 5, 7), 30, '+2 níveis: x1,5')
-    assert.equal(xpForHit(20, 5, 3), 10, '-2 níveis: x0,5 (mínimo)')
-    assert.equal(xpForHit(20, 1, 10), 50, 'teto de x2,5')
+    // o XP fica na escala original: dano / HP_SCALE
+    const dealt = 20 * HP_SCALE
+    assert.equal(xpForHit(dealt, 5, 5), 20, 'mesmo nível: só o dano')
+    assert.equal(xpForHit(dealt, 5, 7), 30, '+2 níveis: x1,5')
+    assert.equal(xpForHit(dealt, 5, 3), 10, '-2 níveis: x0,5 (mínimo)')
+    assert.equal(xpForHit(dealt, 1, 10), 50, 'teto de x2,5')
     assert.equal(xpForHit(0, 1, 10), 0)
     assert.equal(xpForKill(5, 5), XP_EXTRA.kill)
     assert.equal(xpForKill(5, 7), 45)
@@ -1306,6 +1317,13 @@ describe('Progressão (níveis)', () => {
       assert.ok(damageScale(l) > damageScale(l - 1))
       assert.ok(maxHealthFor(l) > maxHealthFor(l - 1))
     }
+    assert.equal(maxHealthFor(MAX_LEVEL), 1000, 'nível máximo: 1000 de vida')
+    assert.equal(damageScale(MAX_LEVEL), 2)
+    assert.equal(damageScale(10), 1.75)
+    assert.equal(damageScale(20), damageScale(MAX_LEVEL), 'além do teto não ganha mais')
+    // Favorece o meio: o ganho por nível sobe até o pico e cai depois
+    const gain = (l) => maxHealthFor(l) - maxHealthFor(l - 1)
+    assert.ok(gain(8) > gain(2) && gain(8) > gain(MAX_LEVEL), 'meio rende mais que começo e fim')
     assert.equal(scaleDamage(DAMAGE.smash, 1), DAMAGE.smash, 'nível 1 não muda o dano')
     assert.ok(scaleDamage(DAMAGE.light, 20) > DAMAGE.light)
     assert.equal(scaleDamage(0, 20), 0, 'sem dano continua sem dano')
@@ -1325,10 +1343,10 @@ describe('Progressão (níveis)', () => {
 
   test('subir de nível aumenta a vida máxima e dá a diferença de vida', () => {
     const h = new Health()
-    h.damage(40) // 60 / 100
+    h.damage(40 * HP_SCALE) // 60% da vida
     h.setMax(maxHealthFor(2))
     assert.equal(h.max, maxHealthFor(2))
-    assert.equal(h.hp, 60 + (maxHealthFor(2) - MAX_HEALTH))
+    assert.equal(h.hp, 60 * HP_SCALE + (maxHealthFor(2) - MAX_HEALTH))
     const missing = h.max - h.hp
     assert.equal(h.heal(1000), missing, 'cura vai até a nova máxima')
     assert.equal(h.hp, h.max)
@@ -1739,5 +1757,56 @@ describe('Estatísticas de fim de partida (matchStats.js)', () => {
     assert.deepEqual(t.timesOf('ninguem'), {})
     t.reset()
     assert.deepEqual(t.timesOf('a'), {})
+  })
+
+  test('XP ganho minuto a minuto', () => {
+    const x = new XpTimeline()
+    x.update('a', 0, 0)
+    x.update('a', 50, 59)
+    x.update('a', 80, 61) // virou o minuto: o 1º fecha com 50
+    x.update('a', 200, 125) // pulou para o 3º minuto: o 2º fecha com 80
+    assert.deepEqual(x.perMinute('a'), [50, 30, 120])
+    assert.deepEqual(x.perMinute('ninguem'), [])
+    x.reset()
+    assert.deepEqual(x.perMinute('a'), [])
+  })
+
+  test('dano causado e recebido por nível entra no relatório, com vida e dano de cada batida', () => {
+    const [a] = buildStats(ranked, {
+      seconds: 600,
+      levelOf: () => 2,
+      xpOf: () => 300,
+      levelTimesOf: () => ({ 1: 60, 2: 120 }),
+      xpByMinuteOf: () => [100, 200],
+      dealtOf: () => ({ 1: 40, 2: 100 }),
+      takenOf: () => ({ 2: 70 }),
+      hpAt: (l) => 500 + l,
+      hitDamageAt: (l) => ({ light: 25 * l }),
+    })
+    assert.equal(a.xpPerMin, 30)
+    assert.deepEqual(a.xpByMinute, [100, 200])
+    assert.equal(a.damageDealt, 140)
+    assert.equal(a.damageTaken, 70)
+    assert.deepEqual(a.levels, {
+      1: { seconds: 60, maxHp: 501, hitDamage: { light: 25 }, damageDealt: 40, damageTaken: 0 },
+      2: { seconds: 120, maxHp: 502, hitDamage: { light: 50 }, damageDealt: 100, damageTaken: 70 },
+    })
+  })
+
+  test('KillTracker guarda o dano por nível; a soma de todos dá o causado por jogador', () => {
+    const a = new KillTracker(), b = new KillTracker()
+    a.noteDealt('b', 3, 40)
+    a.noteDealt('b', 3, 10)
+    a.noteDealt('b', 4, 5)
+    a.noteDealt(null, 1, 99) // parede: sem autor
+    a.noteTaken(2, 50)
+    a.noteTaken(2, 0)
+    b.noteDealt('b', 3, 7)
+    assert.deepEqual(a.dmgTaken, { 2: 50 })
+    assert.deepEqual(a.dmgBy, { b: { 3: 50, 4: 5 } })
+    assert.deepEqual(tallyDealtByLevel([a, b]).get('b'), { 3: 57, 4: 5 })
+    a.reset()
+    assert.deepEqual(a.dmgBy, {})
+    assert.deepEqual(a.dmgTaken, {})
   })
 })

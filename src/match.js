@@ -27,6 +27,8 @@ export class KillTracker {
     this.asBy = {}        // id de quem ajudou (bateu em mim, outro abateu) -> quantas vezes
     this.xpBy = {}        // id de quem bateu -> XP que ele ganhou em mim (vira nível dele)
     this.koAt = {}        // id de quem me abateu -> instante do último abate dele
+    this.dmgBy = {}       // id de quem bateu -> { nível dele: dano que causou em mim } (relatório: matchStats.js)
+    this.dmgTaken = {}    // nível meu -> dano que levei (relatório)
     this.lastHit = null   // { by, at }: último dano recebido
     this.hits = {}        // id -> instante do último dano recebido dele
   }
@@ -41,6 +43,18 @@ export class KillTracker {
   /** `by` ganhou `xp` (inteiro) em cima de mim: golpe ou bônus de abate. */
   noteXp(by, xp) {
     if (by && xp > 0) this.xpBy[by] = (this.xpBy[by] ?? 0) + xp
+  }
+
+  /** `by` (no nível `level`) me causou `dealt` de dano (o que de fato tirou da minha vida). */
+  noteDealt(by, level, dealt) {
+    if (!by || !(dealt > 0)) return
+    const levels = (this.dmgBy[by] ??= {})
+    levels[level] = (levels[level] ?? 0) + dealt
+  }
+
+  /** Levei `dealt` de dano estando no nível `level` (de qualquer origem, até parede e espinho). */
+  noteTaken(level, dealt) {
+    if (dealt > 0) this.dmgTaken[level] = (this.dmgTaken[level] ?? 0) + dealt
   }
 
   /** Segundos desde o último abate de `by` em mim (null = nunca me abateu). */
@@ -91,6 +105,22 @@ export function tallyXp(records) {
 /** Assistências de cada um, somando o asBy de todos os jogadores. */
 export function tallyAssists(records) {
   return tally(records, 'asBy')
+}
+
+/**
+ * Dano causado por cada um em cada nível dele, somando o dmgBy de todos os
+ * jogadores. @returns {Map<string, Record<number, number>>}
+ */
+export function tallyDealtByLevel(records) {
+  const total = new Map()
+  for (const record of records) {
+    for (const [id, levels] of Object.entries(record.dmgBy ?? {})) {
+      const mine = total.get(id) ?? {}
+      for (const [level, n] of Object.entries(levels)) mine[level] = (mine[level] ?? 0) + n
+      total.set(id, mine)
+    }
+  }
+  return total
 }
 
 function tally(records, field) {

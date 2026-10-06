@@ -84,6 +84,8 @@ export class RemotePlayers {
     player.koBy = state.koBy
     player.asBy = state.asBy
     player.xpBy = state.xpBy
+    player.dmgBy = state.dmgBy
+    player.dmgTaken = state.dmgTaken
     player.deaths = state.deaths
     const liveryChanged = state.livery !== player.livery
     player.livery = state.livery

@@ -1,4 +1,4 @@
-import { MAX_HEALTH } from './damage.js'
+import { MAX_HEALTH, HP_SCALE } from './damage.js'
 
 // Progressão na partida: o XP (dano causado, mais bônus por diferença de nível
 // e por abate) se acumula e sobe o nível (até MAX_LEVEL); cada nível dá mais
@@ -16,13 +16,23 @@ import { MAX_HEALTH } from './damage.js'
 // Quem bate escala o próprio dano antes de mandar (o agressor já resolve a
 // batida; damage.js); cada um ajusta a própria vida máxima ao subir de nível.
 
-export const MAX_LEVEL = 10
+export const MAX_LEVEL = 15
 
-// Por nível acima do 1: +5% de dano e +5 de vida máxima
-// (nível 10: 1,45x de dano e 145 de vida)
-export const LEVEL_UP = {
-  damage: 0.05,
-  health: 5,
+// Forma da curva: peso de cada nível (índice = nível; o 1 não pesa nada). O
+// começo sobe devagar (não alimenta bola de neve), o pico fica nos níveis 6 a
+// 10 e o fim volta a subir pouco. Só a forma importa: o total é normalizado.
+export const LEVEL_BONUS = [0, 0, 3, 3, 4, 5, 6, 7, 8, 8, 7, 5, 4, 3, 3, 2]
+
+// Dano e vida máxima no nível máximo, em múltiplos do nível 1: 2x = 500 -> 1000
+// de vida e o dobro de dano (os dois juntos, então o tempo de nocaute entre
+// jogadores do mesmo nível não muda). Nível 10: 1,75x (875 de vida).
+export const LEVEL_TOP = 2
+
+/** Soma dos pesos até `level` (além do último da tabela não ganha mais nada). */
+export const levelBonus = (level) => {
+  let total = 0
+  for (let l = 2; l <= Math.min(level, MAX_LEVEL); l++) total += LEVEL_BONUS[l]
+  return total
 }
 
 // XP para sair do nível 1 (120), do 2 (138), do 3 (156)...
@@ -52,9 +62,9 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
 export const hitXpScale = (attackerLevel, victimLevel) =>
   clamp(1 + XP_EXTRA.perLevel * (victimLevel - attackerLevel), XP_EXTRA.min, XP_EXTRA.max)
 
-/** XP (inteiro) que o atacante ganha por `dealt` de dano causado. */
+/** XP (inteiro) que o atacante ganha por `dealt` de dano causado (o XP fica na escala original: dano / HP_SCALE). */
 export const xpForHit = (dealt, attackerLevel, victimLevel) =>
-  dealt > 0 ? Math.round(dealt * hitXpScale(attackerLevel, victimLevel)) : 0
+  dealt > 0 ? Math.round((dealt / HP_SCALE) * hitXpScale(attackerLevel, victimLevel)) : 0
 
 /** XP (inteiro) extra de quem abate. */
 export const xpForKill = (attackerLevel, victimLevel) =>
@@ -91,10 +101,10 @@ export function levelProgress(damage = 0) {
 }
 
 /** Multiplicador de dano no nível. */
-export const damageScale = (level) => 1 + LEVEL_UP.damage * (level - 1)
+export const damageScale = (level) => 1 + ((LEVEL_TOP - 1) * levelBonus(level)) / levelBonus(MAX_LEVEL)
 
 /** Dano de uma batida/ultimate de quem está em `level` (inteiro, como vai pela rede). */
 export const scaleDamage = (base, level) => (base > 0 ? Math.round(base * damageScale(level)) : 0)
 
 /** Vida máxima no nível. */
-export const maxHealthFor = (level) => MAX_HEALTH + LEVEL_UP.health * (level - 1)
+export const maxHealthFor = (level) => Math.round(MAX_HEALTH * damageScale(level))

@@ -13,6 +13,17 @@ const APP_ID = 'jotapedelgiu-threejs-testing-batebate'
 // primeiros continuam os mesmos, então versões antigas ainda se acham.
 const RELAY_REDUNDANCY = 12
 
+// Os relays só servem para os navegadores se acharem; os dados vão direto
+// (WebRTC), e só com STUN isso falha quando a rede de alguém não permite
+// conexão direta (CGNAT, rede móvel, faculdade...): os dois entram na sala,
+// mas nunca se veem. Um servidor TURN faz a ponte nesses casos. Vem do build
+// (.env ou variáveis do deploy); sem VITE_TURN_URL fica só o STUN, como antes.
+// VITE_TURN_URL aceita várias URLs separadas por vírgula.
+const TURN_URL = import.meta.env.VITE_TURN_URL
+const turnConfig = TURN_URL
+  ? [{ urls: TURN_URL.split(',').map((u) => u.trim()), username: import.meta.env.VITE_TURN_USER, credential: import.meta.env.VITE_TURN_CREDENTIAL }]
+  : undefined
+
 // Liga o recebimento de uma ação ao handler, validando antes
 function listen(action, validate, handler) {
   action.onMessage = (data, { peerId }) => {
@@ -44,7 +55,7 @@ function listen(action, validate, handler) {
  * }} handlers
  */
 export function joinArena(roomId, handlers) {
-  const room = joinRoom({ appId: APP_ID, relayConfig: { redundancy: RELAY_REDUNDANCY } }, roomId)
+  const room = joinRoom({ appId: APP_ID, relayConfig: { redundancy: RELAY_REDUNDANCY }, turnConfig }, roomId)
   const stateAction = room.makeAction('state')
   // Batida anunciada por quem bateu: empurrão (ix, iz) e dano que `target`
   // deve receber

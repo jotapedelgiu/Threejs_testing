@@ -12,18 +12,24 @@ const HIT_COOLDOWN = 0.6        // s entre batidas do mesmo par
 const TIE_MARGIN = 0.75         // m/s; diferença abaixo disso = os dois bateram
 export const HEAD_ON_MIN = 2    // m/s; entre jogadores, os dois indo um para cima do outro assim = batida de frente
 
+// Todo valor de vida e dano é escrito na escala original (100 de vida) e
+// multiplicado por HP_SCALE, para os números na tela ficarem grandes (1000 de
+// vida no nível máximo) sem mudar nenhuma proporção do jogo. O XP continua na
+// escala original (progression.js divide o dano por HP_SCALE).
+export const HP_SCALE = 5
+
 // Balanceamento (ver bate-bate_balanceamento.xlsx): com 100 de vida e a
 // mistura típica de batidas, um nocaute leva ~36 s de briga (TTK alvo de
 // arena arcade). A curva é acentuada: leve, FORTE e PANCADA seguem ~1:2,4:4,8
 // (embalo vale muito); o TURBO vale mais que uma PANCADA e o combo TURBO +
 // PAREDE tira quase metade da vida.
 export const DAMAGE = {
-  light: 5,
-  strong: 12,
-  smash: 24,
-  turbo: 38, // batida com boost
-  wall: 8,   // bater na parede logo depois de levar um TURBO
-  spike: 6,  // bater num bastão com espinhos
+  light: 5 * HP_SCALE,
+  strong: 12 * HP_SCALE,
+  smash: 24 * HP_SCALE,
+  turbo: 38 * HP_SCALE, // batida com boost
+  wall: 8 * HP_SCALE,   // bater na parede logo depois de levar um TURBO
+  spike: 6 * HP_SCALE,  // bater num bastão com espinhos
 }
 
 export const SPIKE_MIN_SPEED = 2 // m/s contra o bastão para os espinhos machucarem
@@ -251,7 +257,7 @@ export class RamLedger {
 }
 
 // --- Vida ---------------------------------------------------------------------
-export const MAX_HEALTH = 100
+export const MAX_HEALTH = 100 * HP_SCALE
 export const KO_TIME = 2.5       // s fora de combate ao zerar a vida
 export const RESPAWN_SHIELD = 2  // s sem levar dano depois de voltar
 
