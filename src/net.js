@@ -40,6 +40,7 @@ function listen(action, validate, handler) {
  *   onPeerState: (peerId: string, state: object) => void,
  *   onPeerLeave: (peerId: string) => void,
  *   onPeersChange: (count: number) => void,
+ *   onJoinError?: (error: string, peerId: string) => void, // achou o outro nos relays mas a conexão direta falhou
  *   onHit: (hit: { target: string, ix: number, iz: number, damage: number, boosted: boolean }, attackerId: string) => void,
  *   onWall: (wall: { damage: number }, peerId: string) => void,
  *   onPickup: (pickup: { slot: number, gen: number }, peerId: string) => void,
@@ -55,7 +56,13 @@ function listen(action, validate, handler) {
  * }} handlers
  */
 export function joinArena(roomId, handlers) {
-  const room = joinRoom({ appId: APP_ID, relayConfig: { redundancy: RELAY_REDUNDANCY }, turnConfig }, roomId)
+  const room = joinRoom({ appId: APP_ID, relayConfig: { redundancy: RELAY_REDUNDANCY }, turnConfig }, roomId, {
+    // O Trystero não escreve essa falha no console: só avisa por aqui
+    onJoinError: ({ error, peerId }) => {
+      console.error(`Multiplayer: ${error}`)
+      handlers.onJoinError?.(error, peerId)
+    },
+  })
   const stateAction = room.makeAction('state')
   // Batida anunciada por quem bateu: empurrão (ix, iz) e dano que `target`
   // deve receber

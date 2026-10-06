@@ -610,6 +610,11 @@ function startMultiplayer() {
   // Tudo que chega aqui já foi validado (protocol.js)
   net = joinArena(`batebate-${roomCode}`, {
     onPeersChange: setNetStatus,
+    // Os dois se acharam pelos relays mas a conexão direta (WebRTC) não abriu
+    onJoinError: (error) => {
+      netStatus.textContent = `Room ${roomCode} · found a player but could not connect (their network may block direct connections)`
+      console.warn('Multiplayer:', error)
+    },
     // Quem chega recebe quem eu sou e, se a partida já começou, o mapa dela e
     // onde estão as esferas (e entra direto na partida)
     onPeerJoin(peerId) {
